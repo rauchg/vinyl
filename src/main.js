@@ -134,6 +134,8 @@ async function pressAgain() {
 let audioInit = null;
 function initAudio() {
   return audioInit ||= (async () => {
+    // iOS defaults Web Audio to an ambient session, which is muted by the Ring/Silent switch.
+    try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (_) {} // optional API
     ctx = new AudioContext({ latencyHint: 'interactive' });
     await ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
     node = new AudioWorkletNode(ctx, 'turntable', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
@@ -154,8 +156,9 @@ async function powerOn() {
   S.on = true; $('power').classList.add('busy');      // a spinner until the engine is warm AND the record is in it
   powerMsg();
   try {
+    const initializing = initAudio();                 // creates the context synchronously, even on a retry
     if (ctx) ctx.resume().catch(() => {});            // straight away, inside the gesture: iOS only honours it there
-    await initAudio();
+    await initializing;
     // If the browser did not count this event as a user gesture, resume() never settles. Do not hang on it:
     // give up after a moment and go back to waiting, so the next tap can try again.
     if (ctx.state !== 'running') await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 3000))]);

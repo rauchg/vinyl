@@ -41,19 +41,24 @@ export class Renderer {
       lens: m(G.box(-0.0015, -0.006, -0.018, 0.0015, 0.006, -0.008)),
       buttons: m(G.merge(G.rbox(-0.139, -0.184, -0.097, -0.158, DECK_Z, DECK_Z + 0.004, 0.003, 0.0008),
         G.rbox(-0.088, -0.186, -0.066, -0.174, DECK_Z, DECK_Z + 0.003, 0.002, 0.0006), G.rbox(-0.060, -0.186, -0.038, -0.174, DECK_Z, DECK_Z + 0.003, 0.002, 0.0006),
-        G.rbox(0.2335, -0.118, 0.2545, -0.102, DECK_Z, DECK_Z + 0.009, 0.002, 0.001),
         G.rbox(-0.125, 0.172, -0.085, 0.1885, DECK_Z, DECK_Z + 0.011, 0.002, 0.001), G.rbox(0.130, 0.172, 0.170, 0.1885, DECK_Z, DECK_Z + 0.011, 0.002, 0.001))),
+      pitch: m(G.rbox(0.2335, -0.118, 0.2545, -0.102, DECK_Z, DECK_Z + 0.009, 0.002, 0.001)),
+      volume: m(L([[0, 0], [0.013, 0], [0.013, 0.010], [0.011, 0.012], [0, 0.012]], 40)),
+      volumeMark: m(G.box(-0.0008, -0.010, 0.012, 0.0008, -0.004, 0.0125)),
       slot: m(G.rbox(0.2385, -0.170, 0.2495, -0.050, DECK_Z, DECK_Z + 0.0005, 0.002, 0.0002)),
       ledStart: m(G.merge(at(led, -0.132, -0.1635, DECK_Z + 0.004))), led33: m(G.merge(at(led, -0.084, -0.180, DECK_Z + 0.003))),
       led45: m(G.merge(at(led, -0.056, -0.180, DECK_Z + 0.003))), ledPitch: m(G.merge(at(led, 0.229, -0.110, DECK_Z))),
       tower: m(G.merge(at(L([[0.034, DECK_Z], [0.034, -0.0195], [0.031, -0.018], [0.021, -0.018], [0.021, 0.008], [0.0185, 0.010], [0.0185, 0.045], [0.017, 0.0465], [0, 0.0465]], 48), PIVOT_X, PIVOT_Y),
-        at(L([[0.0095, DECK_Z], [0.0095, -0.012], [0.0085, -0.011], [0, -0.011]], 24), PIVOT_X + 0.047, PIVOT_Y + 0.012),
         at(L([[0.006, DECK_Z], [0.006, -0.015], [0, -0.015]], 20), PIVOT_X + 0.042, PIVOT_Y - 0.046),
         at(L([[0.0035, DECK_Z], [0.0035, restZ - 0.003], [0.007, restZ - 0.003], [0.007, restZ], [0, restZ]], 20), rx, ry))),
-      towerCap: m(G.merge(at(L([[0.012, 0.0466], [0.012, 0.0476], [0, 0.0476]], 32), PIVOT_X, PIVOT_Y),
-        G.tube([[PIVOT_X + 0.042, PIVOT_Y - 0.046, -0.016], [PIVOT_X + 0.056, PIVOT_Y - 0.058, -0.004]], 0.0017, 10))),
+      towerCap: m(G.merge(at(L([[0.012, 0.0466], [0.012, 0.0476], [0, 0.0476]], 32), PIVOT_X, PIVOT_Y))),
+      antiskate: m(L([[0.0095, DECK_Z], [0.0095, -0.012], [0.0085, -0.011], [0, -0.011]], 24)),
+      antiMark: m(G.box(-0.0005, -0.007, -0.0108, 0.0005, -0.003, -0.0104)),
+      cue: m(G.tube([[0, 0, 0], [0.014, -0.012, 0.012]], 0.0017, 10)),
+      weightMark: m(G.box(-0.062, -0.0007, 0.0134, -0.055, 0.0007, 0.014)),
       // arm frame
-      tube: m(G.merge(G.tube(TUBE, 0.0042, 20), G.cylX(0.0050, -0.054, 0.002))),
+      // Extend inside the counterweight throughout its tracking-force travel.
+      tube: m(G.merge(G.tube(TUBE, 0.0042, 20), G.cylX(0.0050, -0.075, 0.002))),
       weight: m(G.alongX(L([[0, -0.094], [0.0160, -0.094], [0.0172, -0.0925], [0.0172, -0.062], [0.0160, -0.0605], [0, -0.0605]], 40))),
       dial: m(G.alongX(L([[0.0135, -0.0605], [0.0135, -0.054], [0.0125, -0.053], [0, -0.053]], 40))),
       // headshell frame (+x = direction of groove travel, stylus tip at z = -PIVOT_H)
@@ -123,15 +128,60 @@ export class Renderer {
     return this.cam;
   }
 
-  // world (x, y) on the horizontal plane at height z under a pointer position
-  pick(clientX, clientY, z = 0) {
+  pointerRay(clientX, clientY) {
     const cam = this.cam; if (!cam) return null;
     const b = this.canvas.getBoundingClientRect(), t = Math.tan(FOV / 2);
     const nx = ((clientX - b.left) / b.width * 2 - 1) * t * cam.asp, ny = (1 - (clientY - b.top) / b.height * 2) * t;
-    const d = [0, 1, 2].map((i) => cam.fwd[i] + nx * cam.right[i] + ny * cam.up[i]);
+    return { origin: cam.eye, direction: [0, 1, 2].map((i) => cam.fwd[i] + nx * cam.right[i] + ny * cam.up[i]) };
+  }
+
+  // world (x, y) on the horizontal plane at height z under a pointer position
+  pick(clientX, clientY, z = 0) {
+    const ray = this.pointerRay(clientX, clientY); if (!ray) return null;
+    const { origin: eye, direction: d } = ray;
     if (d[2] >= -1e-6) return null;
-    const k = (z - cam.eye[2]) / d[2];
-    return [cam.eye[0] + k * d[0], cam.eye[1] + k * d[1]];
+    const k = (z - eye[2]) / d[2];
+    return [eye[0] + k * d[0], eye[1] + k * d[1]];
+  }
+
+  // Pick the raised counterweight as a volume; deck controls use their top surfaces.
+  pickControl(x, y) {
+    const ray = this.pointerRay(x, y);
+    if (this.weightMatrix && ray) {
+      // The weight transform is rigid: transpose its rotation to bring the ray into
+      // local coordinates, then intersect the bounds of the weight and numbered ring.
+      const m = this.weightMatrix, delta = ray.origin.map((v, i) => v - m[12 + i]);
+      let near = 0, far = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const o = delta.reduce((s, v, j) => s + v * m[i * 4 + j], 0);
+        const d = ray.direction.reduce((s, v, j) => s + v * m[i * 4 + j], 0);
+        const lo = i === 0 ? -0.094 : -0.0172, hi = i === 0 ? -0.053 : 0.0172;
+        if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) { far = -1; break; } }
+        else {
+          const a = (lo - o) / d, b = (hi - o) / d;
+          near = Math.max(near, Math.min(a, b)); far = Math.min(far, Math.max(a, b));
+        }
+      }
+      if (near <= far) return 'tracking';
+    }
+    const anti = this.pick(x, y, -0.011);
+    if (anti && Math.hypot(anti[0] - PIVOT_X - 0.047, anti[1] - PIVOT_Y - 0.012) < 0.012) return 'antiskate';
+    const cue = this.pick(x, y, -0.004);
+    if (cue && Math.hypot(cue[0] - PIVOT_X - 0.049, cue[1] - PIVOT_Y + 0.052) < 0.015) return 'cue';
+    const power = this.pick(x, y, -0.0045);
+    if (power && Math.hypot(power[0] - STROBE[0], power[1] - STROBE[1]) < 0.020) return 'power';
+    const p = this.pick(x, y, DECK_Z + 0.012);
+    if (p && Math.hypot(p[0] - 0.205, p[1] + 0.170) < 0.017) return 'volume';
+    const slider = this.pick(x, y, DECK_Z + 0.009);
+    if (slider && slider[0] >= 0.231 && slider[0] <= 0.257 && slider[1] >= -0.178 && slider[1] <= -0.042) return 'pitch';
+    const b = this.pick(x, y, DECK_Z + 0.004);
+    if (!b) return null;
+    if (b[0] >= -0.139 && b[0] <= -0.097 && b[1] >= -0.184 && b[1] <= -0.158) return 'start';
+    if (b[1] >= -0.188 && b[1] <= -0.172) {
+      if (b[0] >= -0.090 && b[0] <= -0.064) return '33';
+      if (b[0] >= -0.062 && b[0] <= -0.036) return '45';
+    }
+    return null;
   }
 
   // distance (m) from a point on the arm's plane to the tonearm (tube or headshell), for grabbing it
@@ -153,9 +203,14 @@ export class Renderer {
     const cam = this.camera(st);
     const spin = G.Rz(-st.thp), discM = G.chain(spin, G.T(ecc[0], ecc[1], 0));
     const arm = G.chain(G.T(PIVOT_X, PIVOT_Y, PIVOT_H), G.Rz(st.al), G.Ry(-Math.asin(Math.max(-0.2, Math.min(0.2, st.zt / ARM_LE)))));
+    const weightM = G.chain(arm, G.T(((st.vtf ?? 1.8) - 1.8) * 0.004, 0, 0));
+    this.weightMatrix = weightM;
+    const antiM = G.chain(G.T(PIVOT_X + 0.047, PIVOT_Y + 0.012, 0), G.Rz(-(st.antiskate ?? 1.8) / 4 * Math.PI * 1.5));
+    const cueM = G.chain(G.T(PIVOT_X + 0.042, PIVOT_Y - 0.046, -0.016), G.Ry(st.cue === false ? 0.9 : 0));
     const head = G.chain(arm, G.T(ARM_LE, 0, 0), G.Rz(-ARM_BETA));
     const lensM = G.chain(G.T(STROBE[0] + 0.7026 * 0.0185, STROBE[1] + 0.7115 * 0.0185, 0), G.Rz(0.7917));
-    const on = st.motor ? 1 : 0, r33 = st.rpm < 40 || st.rpm > 70, r45 = st.rpm > 40, off = [0, 0, 0];
+    const volumeM = G.chain(G.T(0.205, -0.170, DECK_Z), G.Rz(((st.volume ?? 1) - 0.5) * Math.PI * 1.5));
+    const power = st.power ?? st.motor, on = st.motor ? 1 : 0, r33 = st.rpm < 40 || st.rpm > 70, r45 = st.rpm > 40, off = [0, 0, 0];
     const glow = (k, col = AMBER) => col.map((v) => v * 2.2 * k);
     // [mesh, model, albedo, roughness, metalness, mode, emissive]
     const items = [
@@ -163,12 +218,16 @@ export class Renderer {
       [m.body, I, BLACK, 0.62, 0, 0, off], [m.plate, I, [0.045, 0.047, 0.052], 0.46, 0.75, 2, off],
       [m.platter, spin, [0.075, 0.075, 0.08], 0.36, 1, 3, off], [m.mat, spin, [0.010, 0.010, 0.010], 0.9, 0, 0, off],
       [m.spindle, I, CHROME, 0.14, 1, 1, off],
-      [m.strobe, I, [0.02, 0.02, 0.022], 0.4, 0.5, 0, off], [m.lens, lensM, [0.15, 0.01, 0.01], 0.3, 0, 0, [2.4 * on, 0.16 * on, 0.05 * on]],
+      [m.strobe, I, [0.02, 0.02, 0.022], 0.4, 0.5, 0, off], [m.lens, lensM, [0.15, 0.01, 0.01], 0.3, 0, 0, [2.4 * power, 0.16 * power, 0.05 * power]],
+      [m.pitch, G.T(0, -(st.pitch || 0) / (st.pitchRange || 0.08) * 0.050, 0), BLACK, 0.42, 0.3, 0, off],
+      [m.volume, volumeM, BLACK, 0.32, 0.6, 0, off], [m.volumeMark, volumeM, CHROME, 0.4, 0, 0, off],
       [m.buttons, I, [0.028, 0.028, 0.030], 0.42, 0.3, 0, off], [m.slot, I, [0.004, 0.004, 0.004], 0.25, 0, 0, off],
-      [m.ledStart, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(on)], [m.led33, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(r33 ? 1 : 0)],
-      [m.led45, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(r45 ? 1 : 0)], [m.ledPitch, I, [0.01, 0.05, 0.02], 0.3, 0, 0, glow(1, [0.2, 1.0, 0.35])],
+      [m.ledStart, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(on)], [m.led33, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(power && r33 ? 1 : 0)],
+      [m.led45, I, [0.05, 0.03, 0.01], 0.3, 0, 0, glow(power && r45 ? 1 : 0)], [m.ledPitch, I, [0.01, 0.05, 0.02], 0.3, 0, 0, glow(power && Math.abs(st.pitch || 0) < 0.001 ? 1 : 0, [0.2, 1.0, 0.35])],
+      [m.antiskate, antiM, BLACK, 0.4, 0.3, 0, off], [m.antiMark, antiM, CHROME, 0.4, 0, 0, off],
+      [m.cue, cueM, CHROME, 0.16, 1, 0, off],
       [m.tower, I, [0.020, 0.020, 0.022], 0.38, 0.6, 0, off], [m.towerCap, I, CHROME, 0.16, 1, 0, off],
-      [m.tube, arm, [0.30, 0.30, 0.32], 0.16, 1, 0, off], [m.weight, arm, [0.022, 0.022, 0.024], 0.42, 0.7, 0, off], [m.dial, arm, CHROME, 0.28, 1, 0, off],
+      [m.tube, arm, [0.30, 0.30, 0.32], 0.16, 1, 0, off], [m.weight, weightM, [0.022, 0.022, 0.024], 0.42, 0.7, 0, off], [m.dial, weightM, CHROME, 0.28, 1, 0, off], [m.weightMark, weightM, BLACK, 0.4, 0, 0, off],
       [m.collar, head, CHROME, 0.2, 1, 0, off], [m.shell, head, [0.014, 0.014, 0.015], 0.4, 0.2, 0, off], [m.holder, head, [0.80, 0.36, 0.05], 0.42, 0, 0, off],
     ];
     if (info) items.push([m.edge, discM, [0.008, 0.008, 0.008], 0.22, 0, 0, off]);
@@ -187,7 +246,7 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, this.tex.shadow);
     const common = (u) => {
       gl.uniformMatrix4fv(u.uVP, false, cam.vp); gl.uniformMatrix4fv(u.uLVP, false, this.lvp); gl.uniform3fv(u.uEye, cam.eye);
-      gl.uniform1i(u.uShadow, 3); gl.uniform4f(u.uLamp, LAMP[0], LAMP[1], LAMP[2], on);
+      gl.uniform1i(u.uShadow, 3); gl.uniform4f(u.uLamp, LAMP[0], LAMP[1], LAMP[2], power ? 1 : 0);
     };
     let u = this.std.u;
     gl.useProgram(this.std.p); common(u); gl.uniform2f(u.uPivot, PIVOT_X, PIVOT_Y);

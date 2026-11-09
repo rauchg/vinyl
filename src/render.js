@@ -57,7 +57,8 @@ export class Renderer {
       cue: m(G.tube([[0, 0, 0], [0.014, -0.012, 0.012]], 0.0017, 10)),
       weightMark: m(G.box(-0.062, -0.0007, 0.0134, -0.055, 0.0007, 0.014)),
       // arm frame
-      tube: m(G.merge(G.tube(TUBE, 0.0042, 20), G.cylX(0.0050, -0.054, 0.002))),
+      // Extend inside the counterweight throughout its tracking-force travel.
+      tube: m(G.merge(G.tube(TUBE, 0.0042, 20), G.cylX(0.0050, -0.075, 0.002))),
       weight: m(G.alongX(L([[0, -0.094], [0.0160, -0.094], [0.0172, -0.0925], [0.0172, -0.062], [0.0160, -0.0605], [0, -0.0605]], 40))),
       dial: m(G.alongX(L([[0.0135, -0.0605], [0.0135, -0.054], [0.0125, -0.053], [0, -0.053]], 40))),
       // headshell frame (+x = direction of groove travel, stylus tip at z = -PIVOT_H)

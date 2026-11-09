@@ -16,5 +16,5 @@ if (missing.length) {
 
 rmSync(dist, { recursive: true, force: true });
 const skip = (src) => !/(\.building|\.tmp)$/.test(src);
-for (const f of ['index.html', 'sw.js', 'og.png', 'src', 'assets', 'records']) cpSync(join(root, f), join(dist, f), { recursive: true, filter: skip });
+for (const f of ['index.html', 'og.png', 'src', 'assets', 'records']) cpSync(join(root, f), join(dist, f), { recursive: true, filter: skip });
 console.log(`dist/: index.html, src/, assets/ (${RECORDS.length} records), records/`);

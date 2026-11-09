@@ -147,7 +147,7 @@ function initAudio() {
         if (S.cue !== m.cueUp) { S.cue = m.cueUp; syncCue(); }
       }
       else if (m.t === 'ready') {
-        S.ready = true; pushParams(); setSpeed(); send({ t: 'view', on: true }); loadRecord(); start();
+        S.ready = true; pushParams(); setSpeed(); setMotor(S.motor); send({ t: 'view', on: true }); loadRecord(); start();
         $('d-rate').textContent = (m.os * m.fs).toLocaleString('en-US');
       } else if (m.t === 'log') console.warn(m.msg);
     };
@@ -159,6 +159,7 @@ const POWER_MSG = matchMedia('(pointer: coarse)').matches ? 'tap to power on' : 
 async function powerOn(autoPlay = false) {
   if (S.on) return;
   S.on = true; S.autoPlay = autoPlay; syncPower(); $('power')?.classList.add('busy');      // a spinner until the engine is warm AND the record is in it
+  setSpeed(33.3333);                              // power-on selects 33⅓ RPM; the physical pitch setting stays put
   powerMsg();
   try {
     if (ctx) ctx.resume().catch(() => {});            // straight away, inside the gesture: iOS only honours it there
@@ -169,7 +170,7 @@ async function powerOn(autoPlay = false) {
     if (ctx.state !== 'running') throw new Error('not started');
     if (S.on) start();
   } catch (err) {
-    S.on = false; syncPower(); $('power')?.classList.remove('busy');
+    S.on = false; setMotor(false); syncPower(); $('power')?.classList.remove('busy');
     if ($('power-msg')) $('power-msg').textContent = err.message === 'not started' ? POWER_MSG : 'audio failed: ' + err.message;
     if (err.message !== 'not started') console.error(err);
   }

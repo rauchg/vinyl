@@ -127,22 +127,41 @@ export class Renderer {
     return this.cam;
   }
 
-  // world (x, y) on the horizontal plane at height z under a pointer position
-  pick(clientX, clientY, z = 0) {
+  pointerRay(clientX, clientY) {
     const cam = this.cam; if (!cam) return null;
     const b = this.canvas.getBoundingClientRect(), t = Math.tan(FOV / 2);
     const nx = ((clientX - b.left) / b.width * 2 - 1) * t * cam.asp, ny = (1 - (clientY - b.top) / b.height * 2) * t;
-    const d = [0, 1, 2].map((i) => cam.fwd[i] + nx * cam.right[i] + ny * cam.up[i]);
-    if (d[2] >= -1e-6) return null;
-    const k = (z - cam.eye[2]) / d[2];
-    return [cam.eye[0] + k * d[0], cam.eye[1] + k * d[1]];
+    return { origin: cam.eye, direction: [0, 1, 2].map((i) => cam.fwd[i] + nx * cam.right[i] + ny * cam.up[i]) };
   }
 
-  // Controls are picked on their top surfaces, before record/arm/orbit gestures.
+  // world (x, y) on the horizontal plane at height z under a pointer position
+  pick(clientX, clientY, z = 0) {
+    const ray = this.pointerRay(clientX, clientY); if (!ray) return null;
+    const { origin: eye, direction: d } = ray;
+    if (d[2] >= -1e-6) return null;
+    const k = (z - eye[2]) / d[2];
+    return [eye[0] + k * d[0], eye[1] + k * d[1]];
+  }
+
+  // Pick the raised counterweight as a volume; deck controls use their top surfaces.
   pickControl(x, y) {
-    if (this.weightCenter) {
-      const w = this.weightCenter, p = this.pick(x, y, w[2]);
-      if (p && Math.hypot(p[0] - w[0], p[1] - w[1]) < 0.022) return 'tracking';
+    const ray = this.pointerRay(x, y);
+    if (this.weightMatrix && ray) {
+      // The weight transform is rigid: transpose its rotation to bring the ray into
+      // local coordinates, then intersect the bounds of the weight and numbered ring.
+      const m = this.weightMatrix, delta = ray.origin.map((v, i) => v - m[12 + i]);
+      let near = 0, far = Infinity;
+      for (let i = 0; i < 3; i++) {
+        const o = delta.reduce((s, v, j) => s + v * m[i * 4 + j], 0);
+        const d = ray.direction.reduce((s, v, j) => s + v * m[i * 4 + j], 0);
+        const lo = i === 0 ? -0.094 : -0.0172, hi = i === 0 ? -0.053 : 0.0172;
+        if (Math.abs(d) < 1e-9) { if (o < lo || o > hi) { far = -1; break; } }
+        else {
+          const a = (lo - o) / d, b = (hi - o) / d;
+          near = Math.max(near, Math.min(a, b)); far = Math.min(far, Math.max(a, b));
+        }
+      }
+      if (near <= far) return 'tracking';
     }
     const anti = this.pick(x, y, -0.011);
     if (anti && Math.hypot(anti[0] - PIVOT_X - 0.047, anti[1] - PIVOT_Y - 0.012) < 0.012) return 'antiskate';
@@ -184,7 +203,7 @@ export class Renderer {
     const spin = G.Rz(-st.thp), discM = G.chain(spin, G.T(ecc[0], ecc[1], 0));
     const arm = G.chain(G.T(PIVOT_X, PIVOT_Y, PIVOT_H), G.Rz(st.al), G.Ry(-Math.asin(Math.max(-0.2, Math.min(0.2, st.zt / ARM_LE)))));
     const weightM = G.chain(arm, G.T(((st.vtf ?? 1.8) - 1.8) * 0.004, 0, 0));
-    this.weightCenter = [0, 1, 2].map((i) => weightM[12 + i] - 0.077 * weightM[i]);
+    this.weightMatrix = weightM;
     const antiM = G.chain(G.T(PIVOT_X + 0.047, PIVOT_Y + 0.012, 0), G.Rz(-(st.antiskate ?? 1.8) / 4 * Math.PI * 1.5));
     const cueM = G.chain(G.T(PIVOT_X + 0.042, PIVOT_Y - 0.046, -0.016), G.Ry(st.cue === false ? 0.9 : 0));
     const head = G.chain(arm, G.T(ARM_LE, 0, 0), G.Rz(-ARM_BETA));

@@ -14,7 +14,7 @@ Sources were consulted on 2026-11-09.
 
 | Visible control | Behavior in this app | Hardware reference |
 | --- | --- | --- |
-| Front-left round switch/strobe housing | Toggles deck power. Switching off cuts motor drive and lets the platter coast; powering on does not move the arm or start the motor. | Technics manual, pp. 8, 18–19 |
+| Front-left round switch/strobe housing | Toggles deck power. Switching off cuts motor drive and lets the platter coast; powering on selects 33⅓ RPM without moving the arm or starting the motor. The pitch slider retains its setting. | Technics manual, pp. 8, 18–19 |
 | Large rectangular front-left button | Starts/stops the motor while deck power is on. | Technics, pp. 18–19 |
 | Small 33 / 45 buttons | Select base RPM; the panel additionally offers 78.26 RPM. Both deck speed lamps light at 78. | Technics, pp. 18–19 (hardware calls this 78 RPM) |
 | Right-hand slider | Fine speed/pitch adjustment: toward the front increases speed, toward the back decreases it. The center snaps to zero. | Technics, p. 20 and its slider diagram |
@@ -80,12 +80,17 @@ engine telemetry, including acceleration and coast-down.
   leaves the motor off and the arm alone. Start then spins the platter.
 - Start/Stop does not toggle deck power or the strobe light. Power off stops
   motor drive; power on works again after the introductory pill has disappeared.
+- Power-on resets a previously selected 45 or 78 RPM to 33⅓ RPM while preserving
+  the pitch setting. Start pressed during audio initialization takes effect when
+  the engine is ready; pressing Stop before then cancels that request.
 - At either base speed, the slider's front endpoint produces a positive pitch
   percentage and the rear endpoint a negative one. Center/reset produces zero.
   Check both ±8% and ±16%; shrinking the range clamps the current pitch.
 - Panel changes update the deck slider/knobs; deck gestures update panel readouts.
 - Cue raises/lowers the stylus without changing motor state. Adjusting the weight
   and anti-skate changes their corresponding panel values independently.
+- Drag the upper and front surfaces of the counterweight at default and low
+  camera angles; they adjust tracking force instead of orbiting the camera.
 - Volume reaches silence at 0% and changes neither RPM nor tracking force.
 - Cancelled button gestures, a drag away from a button, and a two-finger pinch
   must not accidentally activate it. Camera orbit, arm movement and record

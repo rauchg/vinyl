@@ -13,7 +13,7 @@ const worker = { postMessage: (m, transfer) => { busy(); (masterWorker ||= start
 const busy = (h = { got: 0, total: 0 }) => (window.__load = h);
 const idle = () => { if (window.__load) window.__load.done = true; };
 const AZ0 = -0.5, EL0 = 0.6;   // default camera
-const S = { hudOn: false, lastDown: 0, tel: null, tRecv: 0, zoom: 0, zoomT: 0, az: AZ0, el: EL0, rpm: 33.3333, rec: null, pending: null, motor: false, cue: true, ready: false };
+const S = { hudOn: false, lastDown: 0, tel: null, tRecv: 0, zoom: 0, zoomT: 0, az: AZ0, el: EL0, rpm: 33.3333, pitch: 0, pitchRange: 0.08, rec: null, pending: null, motor: false, cue: true, ready: false };
 let ctx = null, node = null, drag = null;
 // ?og renders just the deck on black, with no interface and no audio: it is how og.png (the share image) is made
 const OG = new URLSearchParams(location.search).has('og');
@@ -54,13 +54,17 @@ function loadRecord() {
   send({ t: 'cue', up: true });
   send({ t: 'record', rec, seq: S.rec.seq }, [rec.wallIn.buffer, rec.wallOut.buffer]);
   S.loaded = true;
-  if (S.started) play(); else start();
+  if (S.started && S.on) play(); else start();
 }
-const play = () => { setMotor(true); setTimeout(() => send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }), 400); };
+const play = () => {
+  setMotor(true);
+  clearTimeout(S.cueTimer);
+  S.cueTimer = setTimeout(() => { if (S.on && S.motor) send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }); }, 400);
+};
 // Nothing moves until all three are true: the user powered on, the engine is warm, and a record is in it.
 function start() {
   if (!S.on || !S.ready || !S.loaded || S.started) return;
-  S.started = true; $('power')?.remove(); play();
+  S.started = true; $('power')?.remove(); if (S.autoPlay) play();
 }
 
 // ---------- precompiled record (lathe.mjs): the clean cut ships as DPCM; decode it, press it here, go ----------
@@ -138,9 +142,12 @@ function initAudio() {
     await ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
     node = new AudioWorkletNode(ctx, 'turntable', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     node.port.onmessage = ({ data: m }) => {
-      if (m.t === 'tel') { S.tel = m; S.tRecv = performance.now(); if (m.view) S.view = m.view; S.cue = m.cueUp; }
+      if (m.t === 'tel') {
+        S.tel = m; S.tRecv = performance.now(); if (m.view) S.view = m.view;
+        if (S.cue !== m.cueUp) { S.cue = m.cueUp; syncCue(); }
+      }
       else if (m.t === 'ready') {
-        S.ready = true; pushParams(); send({ t: 'view', on: true }); loadRecord(); start();
+        S.ready = true; pushParams(); setSpeed(); send({ t: 'view', on: true }); loadRecord(); start();
         $('d-rate').textContent = (m.os * m.fs).toLocaleString('en-US');
       } else if (m.t === 'log') console.warn(m.msg);
     };
@@ -149,9 +156,9 @@ function initAudio() {
   })().catch((err) => { audioInit = null; ctx = null; node = null; throw err; });
 }
 const POWER_MSG = matchMedia('(pointer: coarse)').matches ? 'tap to power on' : 'click to power on';
-async function powerOn() {
+async function powerOn(autoPlay = false) {
   if (S.on) return;
-  S.on = true; $('power').classList.add('busy');      // a spinner until the engine is warm AND the record is in it
+  S.on = true; S.autoPlay = autoPlay; syncPower(); $('power')?.classList.add('busy');      // a spinner until the engine is warm AND the record is in it
   powerMsg();
   try {
     if (ctx) ctx.resume().catch(() => {});            // straight away, inside the gesture: iOS only honours it there
@@ -160,9 +167,9 @@ async function powerOn() {
     // give up after a moment and go back to waiting, so the next tap can try again.
     if (ctx.state !== 'running') await Promise.race([ctx.resume(), new Promise((r) => setTimeout(r, 3000))]);
     if (ctx.state !== 'running') throw new Error('not started');
-    start();
+    if (S.on) start();
   } catch (err) {
-    S.on = false; $('power')?.classList.remove('busy');
+    S.on = false; syncPower(); $('power')?.classList.remove('busy');
     if ($('power-msg')) $('power-msg').textContent = err.message === 'not started' ? POWER_MSG : 'audio failed: ' + err.message;
     if (err.message !== 'not started') console.error(err);
   }
@@ -172,21 +179,71 @@ function powerMsg() {
   const el = $('power-msg');
   if (el && S.on && !S.started) el.textContent = $('status').textContent.replace(/\.+$/, '') || (S.loaded ? (S.ready ? 'starting' : 'warming up') : 'loading the record');
 }
-$('power').addEventListener('click', powerOn);       // the pill; a tap on the scene powers on too (see the pointer handlers)
+$('power').addEventListener('click', () => powerOn(true));       // the pill; a tap on the scene powers on too (see the pointer handlers)
 $('power-msg').textContent = POWER_MSG;
 if (!OG) initAudio().catch(() => {});   // best effort before any gesture; the click retries if the browser refused
 
 // ---------- controls ----------
-function setMotor(on) { S.motor = on; send({ t: 'motor', on }); $('b-start').textContent = on ? 'Stop' : 'Start'; $('b-start').classList.toggle('on', on); }
+function syncPower() {
+  $('b-power').textContent = S.on ? 'Power off' : 'Power on';
+  $('b-power').setAttribute('aria-pressed', String(!!S.on));
+  $('b-start').disabled = !S.on;
+}
+function togglePower() {
+  if (!S.on) return powerOn();
+  S.on = false; S.autoPlay = false;
+  clearTimeout(S.cueTimer);
+  setMotor(false); syncPower();
+  // Keep the audio context running: cutting motor power lets the platter coast naturally.
+}
+function syncCue() {
+  $('b-cue').textContent = S.cue ? 'Lower needle' : 'Lift needle';
+  $('b-cue').setAttribute('aria-pressed', String(S.cue));
+}
+function setCue(up) {
+  S.cue = up; syncCue();
+  send({ t: 'cue', up });
+}
+function setMotor(on) { on = !!on && !!S.on; S.motor = on; send({ t: 'motor', on }); $('b-start').textContent = on ? 'Stop' : 'Start'; $('b-start').classList.toggle('on', on); }
+function setSpeed(rpm = S.rpm, pitch = S.pitch) {
+  S.rpm = rpm; S.pitch = Math.max(-S.pitchRange, Math.min(S.pitchRange, pitch));
+  if (Math.abs(S.pitch) < 0.001) S.pitch = 0;
+  $('p-pitch').value = (S.pitch * 100).toFixed(1);
+  $('pitch-value').textContent = `${S.pitch > 0 ? '+' : ''}${(S.pitch * 100).toFixed(1)}%`;
+  document.querySelectorAll('[data-rpm]').forEach((b) => {
+    const selected = +b.dataset.rpm === rpm;
+    b.classList.toggle('on', selected); b.setAttribute('aria-pressed', String(selected));
+  });
+  send({ t: 'speed', rpm: rpm * (1 + S.pitch) });
+}
+function setParameter(id, value) {
+  const input = $(id);
+  input.value = Math.max(+input.min, Math.min(+input.max, value));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+function pitchAt(x, y) {
+  const p = renderer.pick(x, y, -0.013);
+  if (p) setSpeed(S.rpm, -(p[1] + 0.110) / 0.050 * S.pitchRange);
+}
 function pushParams() {
   // 100% on the slider is 2 dB under unity: the cartridge lifts the treble by up to 1.9 dB, and bright peaks would clip
   send({ t: 'set', volume: 0.8 * +$('p-volume').value, stylus: $('p-stylus').value, vtf: +$('p-vtf').value, antiskate: +$('p-antiskate').value, hum: +$('p-hum').value });
 }
-for (const el of document.querySelectorAll('#ctl input[type=range]')) {
+for (const el of document.querySelectorAll('#ctl input[type=range]:not(#p-pitch)')) {
   const out = el.parentElement.querySelector('output'), show = () => { out.textContent = el.id === 'p-volume' ? Math.round(el.value * 100) + '%' : (+el.value).toFixed(2); };
   el.addEventListener('input', () => { show(); if (el.id.startsWith('p-')) pushParams(); }); show();
 }
 $('p-stylus').addEventListener('change', pushParams);
+$('p-pitch').addEventListener('input', (e) => setSpeed(S.rpm, +e.target.value / 100));
+$('p-pitch-range').addEventListener('change', (e) => {
+  S.pitchRange = +e.target.value;
+  $('p-pitch').min = -S.pitchRange * 100;
+  $('p-pitch').max = S.pitchRange * 100;
+  setSpeed();
+});
+$('b-pitch-reset').addEventListener('click', () => setSpeed(S.rpm, 0));
+$('b-power').addEventListener('click', togglePower);
+syncPower();
 const toggle = (btn, panel, onChange) => $(btn).addEventListener('click', () => {
   const open = $(panel).hidden; $(panel).hidden = !open; $(btn).setAttribute('aria-pressed', String(open)); if (onChange) onChange(open);
 });
@@ -208,11 +265,11 @@ $('t-reset').addEventListener('click', () => {      // ease the camera back to w
 $('b-more').addEventListener('click', () => { $('more').showModal(); $('more').scrollTop = 0; });
 $('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });   // click outside closes
 $('b-start').addEventListener('click', () => setMotor(!S.motor));
-$('b-cue').addEventListener('click', () => send({ t: 'cue', up: !S.cue }));
+$('b-cue').addEventListener('click', () => setCue(!S.cue));
 $('b-bump').addEventListener('click', () => send({ t: 'bump', s: 1 }));
 $('b-press').addEventListener('click', pressAgain);
 for (const b of document.querySelectorAll('[data-rpm]')) {
-  b.addEventListener('click', () => { document.querySelectorAll('[data-rpm]').forEach((x) => x.classList.toggle('on', x === b)); S.rpm = +b.dataset.rpm; send({ t: 'speed', rpm: S.rpm }); });
+  b.addEventListener('click', () => setSpeed(+b.dataset.rpm));
 }
 async function cutFiles(files) {
   const list = [...files].filter((f) => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|ogg|aiff?)$/i.test(f.name));
@@ -286,9 +343,9 @@ $('f-audio').addEventListener('change', (e) => cutFiles(e.target.files));
 addEventListener('dragover', (e) => e.preventDefault());
 addEventListener('drop', (e) => { e.preventDefault(); cutFiles(e.dataTransfer.files); });
 addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  if (e.target.closest('button, input, select, textarea, a, [contenteditable=true]')) return;
   if (e.code === 'Space') { e.preventDefault(); setMotor(!S.motor); }
-  else if (e.key === 'c') send({ t: 'cue', up: !S.cue });
+  else if (e.key === 'c') setCue(!S.cue);
   else if (e.key === 'b') send({ t: 'bump', s: 1 });
   else if (e.key === 'z') S.zoomT = S.zoomT > 0.5 ? 0 : 0.92;
 });
@@ -296,6 +353,20 @@ addEventListener('keydown', (e) => {
 // ---------- pointer: grab the headshell, spin the record, or click to drop the needle ----------
 const armAngle = (p) => { const a = Math.atan2(p[1] - PIVOT_Y, p[0] - PIVOT_X); return a < 0 ? a + TAU : a; };
 const curAl = () => (S.tel ? S.tel.al : ALPHA_REST);
+const PARAM_CONTROLS = { volume: 'p-volume', tracking: 'p-vtf', antiskate: 'p-antiskate' };
+const CONTROL_HELP = {
+  power: 'Turn deck power on or off', start: 'Start or stop the platter',
+  '33': 'Select 33⅓ RPM', '45': 'Select 45 RPM',
+  cue: 'Lift or lower the needle', pitch: 'Pitch: drag toward the front to play faster',
+  volume: 'App volume: drag up to increase', tracking: 'Tracking force: drag up to increase',
+  antiskate: 'Anti-skate: drag up to increase',
+};
+function controlHint(control) {
+  const el = $('control-hint'), id = PARAM_CONTROLS[control];
+  const value = id ? `: ${$(id).parentElement.querySelector('output').textContent}` : control === 'pitch' ? `: ${$('pitch-value').textContent}` : '';
+  el.textContent = control ? CONTROL_HELP[control] + value : '';
+  canvas.title = el.textContent;
+}
 const touches = new Map();   // active pointers, for two-finger pinch zoom
 canvas.addEventListener('pointerdown', (e) => {
   try { canvas.setPointerCapture(e.pointerId); } catch {}
@@ -308,6 +379,15 @@ canvas.addEventListener('pointerdown', (e) => {
     return;
   }
   const pa = renderer.pick(e.clientX, e.clientY, 0.018), p = renderer.pick(e.clientX, e.clientY, 0);
+  const control = e.button === 0 && !e.shiftKey && !e.altKey && renderer.pickControl(e.clientX, e.clientY);
+  if (control) {
+    const id = PARAM_CONTROLS[control];
+    drag = { type: control, x: e.clientX, y: e.clientY, value: id ? +$(id).value : 0, tap: true, pointerId: e.pointerId };
+    if (control === 'pitch') pitchAt(e.clientX, e.clientY);
+    controlHint(control);
+    canvas.style.cursor = id || control === 'pitch' ? 'ns-resize' : 'pointer';
+    return;
+  }
   // until it is powered on the scene can only be looked around; a tap that doesn't drag powers it on
   const plain = S.started && S.ready && e.button === 0 && !e.shiftKey && !e.altKey;
   if (plain && pa && renderer.armDistance(pa, curAl()) < (e.pointerType === 'touch' ? 0.03 : 0.011)) {
@@ -321,8 +401,23 @@ canvas.addEventListener('pointerdown', (e) => {
 });
 canvas.addEventListener('pointermove', (e) => {
   if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
-  if (!drag) return;
-  if (drag.type === 'pinch') {
+  if (!drag) {
+    const control = renderer.pickControl(e.clientX, e.clientY);
+    canvas.style.cursor = control ? (PARAM_CONTROLS[control] || control === 'pitch' ? 'ns-resize' : 'pointer') : 'grab';
+    controlHint(control);
+    return;
+  }
+  if (drag.pointerId != null && drag.pointerId !== e.pointerId) return;
+  const id = PARAM_CONTROLS[drag.type];
+  if (id) {
+    const input = $(id), scale = (+input.max - +input.min) / 180;
+    setParameter(id, drag.value + (drag.y - e.clientY + e.clientX - drag.x) * scale);
+    controlHint(drag.type);
+  } else if (drag.type === 'pitch') {
+    pitchAt(e.clientX, e.clientY); controlHint('pitch');
+  } else if (['power', 'start', '33', '45', 'cue'].includes(drag.type)) {
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 6) drag.tap = false;
+  } else if (drag.type === 'pinch') {
     const [a, b] = [...touches.values()];
     if (b) S.zoomT = Math.max(-0.8, Math.min(0.985, drag.z0 + 0.6 * Math.log(Math.hypot(a[0] - b[0], a[1] - b[1]) / drag.d0)));
   } else if (drag.type === 'orbit') {
@@ -340,22 +435,29 @@ canvas.addEventListener('pointermove', (e) => {
     send({ t: 'platterMove', d: -d });            // platter angle is clockwise-positive
   }
 });
-const release = () => {
+const release = (cancelled = false) => {
   if (!drag) return;
+  if (!cancelled && drag.tap) {
+    if (drag.type === 'power') S.powerTap = true; // consumed in click/touchend so iOS can resume audio
+    else if (drag.type === 'start') $('b-start').click();
+    else if (drag.type === 'cue') setCue(!S.cue);
+    else if (drag.type === '33' || drag.type === '45') setSpeed(drag.type === '33' ? 33.3333 : 45);
+  }
   if (drag.type === 'arm') send({ t: 'hand', on: false });
-  else if (drag.type === 'orbit' && drag.tap) S.tapped = performance.now();   // powers on in the click / touchend that follows
+  else if (!cancelled && drag.type === 'orbit' && drag.tap) S.tapped = performance.now();   // powers on in the click / touchend that follows
   else if (drag.type === 'platter') {
     send({ t: 'platter', on: false });
     const r = Math.hypot(drag.p[0], drag.p[1]);
-    if (drag.moved < 0.003 && performance.now() - drag.t0 < 400 && r > R_LABEL + 0.002) send({ t: 'cueTo', al: alphaForRadius(r) });
+    if (!cancelled && drag.moved < 0.003 && performance.now() - drag.t0 < 400 && r > R_LABEL + 0.002) send({ t: 'cueTo', al: alphaForRadius(r) });
   }
   drag = null; canvas.style.cursor = 'grab';
 };
-for (const type of ['pointerup', 'pointercancel']) canvas.addEventListener(type, (e) => { touches.delete(e.pointerId); release(); });
+for (const type of ['pointerup', 'pointercancel']) canvas.addEventListener(type, (e) => { touches.delete(e.pointerId); if (drag?.pointerId == null || drag.pointerId === e.pointerId) release(type === 'pointercancel'); });
 // A tap on the scene powers on. It has to happen in `touchend` or `click`: iOS Safari does not accept
 // `pointerup` as a gesture that may start audio, and the context would stay suspended forever.
 for (const type of ['touchend', 'click']) canvas.addEventListener(type, () => {
-  if (!S.on && S.tapped && performance.now() - S.tapped < 800 && document.documentElement.classList.contains('ready')) { S.tapped = 0; powerOn(); }
+  if (S.powerTap) { S.powerTap = false; togglePower(); return; }
+  if (!S.started && !S.on && S.tapped && performance.now() - S.tapped < 800 && document.documentElement.classList.contains('ready')) { S.tapped = 0; powerOn(true); }
 });
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 canvas.addEventListener('wheel', (e) => { e.preventDefault(); S.zoomT = Math.max(-0.8, Math.min(0.985, S.zoomT - e.deltaY * (e.ctrlKey ? 0.01 : 0.0015))); }, { passive: false });
@@ -441,7 +543,7 @@ function tick() {
   if (moved !== S.moved) { S.moved = moved; $('t-reset').hidden = !moved; }
   guard('render', () => {
     if (OG) renderer.draw({ thp: 2.2, al: alphaForRadius(0.108), zt: 0, zoom: 0, az: -0.5, el: 0.6, motor: true, rpm: 33.3333, bare: true, dist: 1.1, at: [0.021, -0.07, -0.093], ...window.__og });   // deck high in the frame: X overlays the bottom
-    else renderer.draw({ thp: t ? t.thp + t.wp * dt : 0, al: t ? t.al : ALPHA_REST, zt: t ? t.zb + t.ze : 5e-3, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm });
+    else renderer.draw({ thp: t ? t.thp + t.wp * dt : 0, al: t ? t.al : ALPHA_REST, zt: t ? t.zb + t.ze : 5e-3, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm, pitch: S.pitch, pitchRange: S.pitchRange, power: !!S.on, cue: S.cue, vtf: +$('p-vtf').value, antiskate: +$('p-antiskate').value, volume: +$('p-volume').value });
   });
   if (frame++ % 2 === 0 && S.hudOn) guard('groove view', drawScope);
   if (frame % 6 === 0) guard('readout', drawStats);

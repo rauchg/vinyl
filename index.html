@@ -117,6 +117,8 @@
   .row output { flex: 0 0 34px; text-align: right; font: 11px var(--mono); color: var(--soft); }
   input[type=range] { flex: 1; min-width: 0; accent-color: var(--acc); height: 14px; }
   #ctl button, select, .file { font: inherit; color: var(--fg); background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; cursor: pointer; flex: 1; text-align: center; }
+  #ctl button:disabled { opacity: .4; cursor: default; }
+  #control-hint { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); color: var(--soft); pointer-events: none; font-size: 12px; text-align: center; }
   #ctl button:hover, .file:hover { background: rgba(255,255,255,.12); }
   #ctl button.on { background: var(--acc); color: #1a1206; border-color: transparent; }
   #shelf { top: 46px; right: 14px; width: 268px; max-height: calc(100% - 62px); overflow: auto; padding: 8px; }
@@ -199,15 +201,19 @@
   </div>
 </section>
 
+<output id="control-hint" aria-live="polite"></output>
 <section id="ctl" class="panel" hidden>
-  <div class="row"><button id="b-start">Start</button><button id="b-cue">Cue</button></div>
+  <div class="row"><button id="b-power" aria-pressed="false">Power on</button><button id="b-start" disabled>Start</button></div>
+  <div class="row"><button id="b-cue" aria-pressed="true">Lower needle</button></div>
   <div class="row"><button data-rpm="33.3333" class="on">33</button><button data-rpm="45">45</button><button data-rpm="78.26">78</button></div>
-  <div class="row"><label>Volume</label><input id="p-volume" type="range" min="0" max="1" step="0.01" value="1"><output></output></div>
+  <div class="row"><label for="p-pitch">Pitch</label><input id="p-pitch" type="range" min="-8" max="8" step="0.1" value="0"><output id="pitch-value" for="p-pitch">0.0%</output></div>
+  <div class="row"><label for="p-pitch-range">Pitch range</label><select id="p-pitch-range"><option value="0.08">±8%</option><option value="0.16">±16%</option></select><button id="b-pitch-reset">Reset pitch</button></div>
+  <div class="row"><label for="p-volume">App volume</label><input id="p-volume" type="range" min="0" max="1" step="0.01" value="1"><output></output></div>
 
   <h2>Cartridge</h2>
   <div class="row"><select id="p-stylus"><option value="elliptical">Elliptical 0.3 x 0.7 mil</option><option value="conical">Conical 0.7 mil</option><option value="microline">Micro-line</option></select></div>
-  <div class="row"><label>Tracking g</label><input id="p-vtf" type="range" min="0.2" max="4" step="0.05" value="1.8"><output></output></div>
-  <div class="row"><label>Anti-skate</label><input id="p-antiskate" type="range" min="0" max="4" step="0.05" value="1.8"><output></output></div>
+  <div class="row"><label for="p-vtf">Tracking g</label><input id="p-vtf" type="range" min="0.2" max="4" step="0.05" value="1.8"><output></output></div>
+  <div class="row"><label for="p-antiskate">Anti-skate</label><input id="p-antiskate" type="range" min="0" max="4" step="0.05" value="1.8"><output></output></div>
   <div class="row"><label>Mains hum</label><input id="p-hum" type="range" min="0" max="3" step="0.05" value="0"><output></output></div>
 
   <h2>This pressing</h2>

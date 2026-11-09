@@ -29,6 +29,16 @@ $ npm test        # offline checks of the physics: response, distortion, surface
 $ npm run bench   # CPU cost of the engine per second of audio
 ```
 
+## Deck controls
+
+- The front-left round switch toggles deck power; the rectangular button beside it starts/stops the platter.
+- The small 33 / 45 buttons select base RPM. The Controls panel also offers 78 RPM.
+- Drag the right-hand pitch slider toward the front to speed up, or toward the back to slow down. The default range is ±8%; Controls offers ±16% and Reset pitch. Speed changes also change the music's pitch.
+- Click the cue lever to lift/lower the needle. Drag the rear counterweight or the small anti-skate dial to adjust their corresponding Controls values.
+- The added front-right knob adjusts app volume; it is separate from the deck's power switch.
+
+For the source manuals, hardware mapping, app-specific choices and verification checklist, see [Deck controls and hardware references](docs/deck-controls.md).
+
 ## How it works
 
 **1️⃣ Cut.** The lathe ([`src/cut.js`](src/cut.js)) turns audio into the shape of the two walls of a [45/45 stereo groove](https://en.wikipedia.org/wiki/Phonograph_record#Stereophonic_sound) at 33⅓ rpm: RIAA pre-emphasis, an acceleration limiter so the cutter could have cut it, and a spiral pitched so the side fits on a 12" disc.

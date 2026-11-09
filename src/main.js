@@ -2,6 +2,7 @@
 import { Renderer } from './render.js';
 import { TAU } from './dsp.js';
 import { RECORDS } from './records.js';
+import { COMMONS_ALBUMS, albumSource, loadCommonsAlbum, prepareCommonsTrack } from './commons.js';
 import { press, makeVis } from './press.js';
 import { PIVOT_X, PIVOT_Y, ALPHA_REST, R_DISC, R_LABEL, R_LEADIN, W33, alphaForRadius, stylusXY } from './geometry.js';
 
@@ -27,6 +28,7 @@ const condition = () => Object.fromEntries(['noise', 'dust', 'scratches', 'warp'
 function startWorker() {
   const w = new Worker(new URL('./master-worker.js', import.meta.url), { type: 'module' });
   w.onmessage = ({ data: m }) => {
+    if (m.id != null && m.id !== pick) return;
     if (m.t === 'status') status(m.msg + '...');
     else if (m.t === 'error') { idle(); status('Mastering failed: ' + m.msg); console.error(m.msg); }
     else if (m.t === 'done') { if (m.id == null || m.id === pick) gotRecord(m.rec, m.vis); }
@@ -54,13 +56,19 @@ function loadRecord() {
   send({ t: 'cue', up: true });
   send({ t: 'record', rec, seq: S.rec.seq }, [rec.wallIn.buffer, rec.wallOut.buffer]);
   S.loaded = true;
-  if (S.started) play(); else start();
+  if (S.album) {
+    if (S.started && S.on && S.album.wantsPlay) play(); else start();
+  } else if (S.started) play(); else start();
 }
-const play = () => { setMotor(true); setTimeout(() => send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }), 400); };
+const play = () => {
+  setMotor(true);
+  clearTimeout(S.cueTimer);
+  S.cueTimer = setTimeout(() => { if (S.on && S.motor) send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }); }, 400);
+};
 // Nothing moves until all three are true: the user powered on, the engine is warm, and a record is in it.
 function start() {
   if (!S.on || !S.ready || !S.loaded || S.started) return;
-  S.started = true; $('power')?.remove(); play();
+  S.started = true; $('power')?.remove(); if (!S.album || S.album.wantsPlay) play();
 }
 
 // ---------- precompiled record (lathe.mjs): the clean cut ships as DPCM; decode it, press it here, go ----------
@@ -112,17 +120,20 @@ async function loadPrecompiled(dir = 'assets/', me = pick, pressing = null) {   
   gotRecord(rec, pressing ? makeVis(rec) : { data: new Uint8Array(visData), cols: man.vis.cols, rows: man.vis.rows });
 }
 function houseRecord() {                        // "Demo EP" on the shelf: assets/, or synthesised and mastered here
+  const me = pick;
   S.workerHasSource = false;
   return loadPrecompiled().catch((err) => {     // not built (or stale): master it here instead
+    if (me !== pick) return;
     console.info((err.message || err) + '; mastering in the browser');
-    S.man = null; worker.postMessage({ t: 'demo', fs: 48000, cond: condition() });
+    S.man = null; worker.postMessage({ t: 'demo', id: me, fs: 48000, cond: condition() });
   });
 }
 // Pressing again: a precompiled record is pressed here from the same cut (re-read from the browser cache);
 // one mastered in the browser goes back to the worker, which still has the tape.
 async function pressAgain() {
+  if (S.album) return chooseCommonsTrack(S.album.index);
   const cond = condition(), seed = 1 + Math.floor(Math.random() * 1e6);
-  if (!S.man) return worker.postMessage({ t: 'press', cond, seed });
+  if (!S.man) return worker.postMessage({ t: 'press', id: pick, cond, seed });
   const me = ++pick;
   try { await loadPrecompiled(S.manDir, me, { cond, seed }); }
   catch (err) { console.error(err); if (me === pick) { idle(); status('Could not press that record again.'); } }
@@ -138,9 +149,12 @@ function initAudio() {
     await ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
     node = new AudioWorkletNode(ctx, 'turntable', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     node.port.onmessage = ({ data: m }) => {
-      if (m.t === 'tel') { S.tel = m; S.tRecv = performance.now(); if (m.view) S.view = m.view; S.cue = m.cueUp; }
+      if (m.t === 'tel') {
+        S.tel = m; S.tRecv = performance.now(); if (m.view) S.view = m.view; S.cue = m.cueUp;
+        advanceCommons(m);
+      }
       else if (m.t === 'ready') {
-        S.ready = true; pushParams(); send({ t: 'view', on: true }); loadRecord(); start();
+        S.ready = true; pushParams(); send({ t: 'motor', on: S.motor }); send({ t: 'view', on: true }); loadRecord(); start();
         $('d-rate').textContent = (m.os * m.fs).toLocaleString('en-US');
       } else if (m.t === 'log') console.warn(m.msg);
     };
@@ -151,7 +165,7 @@ function initAudio() {
 const POWER_MSG = matchMedia('(pointer: coarse)').matches ? 'tap to power on' : 'click to power on';
 async function powerOn() {
   if (S.on) return;
-  S.on = true; $('power').classList.add('busy');      // a spinner until the engine is warm AND the record is in it
+  S.on = true; $('power')?.classList.add('busy');      // a spinner until the engine is warm AND the record is in it
   powerMsg();
   try {
     if (ctx) ctx.resume().catch(() => {});            // straight away, inside the gesture: iOS only honours it there
@@ -162,7 +176,7 @@ async function powerOn() {
     if (ctx.state !== 'running') throw new Error('not started');
     start();
   } catch (err) {
-    S.on = false; $('power')?.classList.remove('busy');
+    S.on = false; setMotor(false); $('power')?.classList.remove('busy');
     if ($('power-msg')) $('power-msg').textContent = err.message === 'not started' ? POWER_MSG : 'audio failed: ' + err.message;
     if (err.message !== 'not started') console.error(err);
   }
@@ -177,7 +191,8 @@ $('power-msg').textContent = POWER_MSG;
 if (!OG) initAudio().catch(() => {});   // best effort before any gesture; the click retries if the browser refused
 
 // ---------- controls ----------
-function setMotor(on) { S.motor = on; send({ t: 'motor', on }); $('b-start').textContent = on ? 'Stop' : 'Start'; $('b-start').classList.toggle('on', on); }
+function setCue(up) { S.cue = up; send({ t: 'cue', up }); }
+function setMotor(on) { S.motor = on; if (S.album) S.album.wantsPlay = on; send({ t: 'motor', on }); $('b-start').textContent = on ? 'Stop' : 'Start'; $('b-start').classList.toggle('on', on); }
 function pushParams() {
   // 100% on the slider is 2 dB under unity: the cartridge lifts the treble by up to 1.9 dB, and bright peaks would clip
   send({ t: 'set', volume: 0.8 * +$('p-volume').value, stylus: $('p-stylus').value, vtf: +$('p-vtf').value, antiskate: +$('p-antiskate').value, hum: +$('p-hum').value });
@@ -217,18 +232,22 @@ for (const b of document.querySelectorAll('[data-rpm]')) {
 async function cutFiles(files) {
   const list = [...files].filter((f) => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|ogg|aiff?)$/i.test(f.name));
   if (!list.length) return;
+  cancelCommons();
+  const me = ++pick;
   status('Decoding...');
   const tracks = [], transfer = [];
   for (const f of list) {
     try {
       const ab = await new OfflineAudioContext(2, 1, 48000).decodeAudioData(await f.arrayBuffer());
+      if (me !== pick) return;
       const L = ab.getChannelData(0).slice(), R = ab.numberOfChannels > 1 ? ab.getChannelData(1).slice() : L.slice();
       tracks.push({ L, R, title: f.name.replace(/\.[^.]+$/, '') }); transfer.push(L.buffer, R.buffer);
     } catch (err) { console.error(err); }
   }
   if (!tracks.length) return status('Could not decode that audio.');
-  S.workerHasSource = true; S.man = null; pick++; markRecord(null);
-  worker.postMessage({ t: 'tracks', tracks, fs: 48000, cond: condition() }, transfer);
+  if (me !== pick) return;
+  S.workerHasSource = true; S.man = null; markRecord(null);
+  worker.postMessage({ t: 'tracks', id: me, tracks, fs: 48000, cond: condition() }, transfer);
 }
 
 // ---------- record shelf: free-to-ship recordings (src/records.js, audio in records/), precompiled into assets/<id>/ ----------
@@ -244,11 +263,12 @@ function nowPlaying(title, time = '', playing = false) {
 function markRecord(r) {
   S.shelf = r?.tracks ? r : null;
   S.recTitle = r ? r.title : 'Your audio'; nowPlaying(S.recTitle);
-  for (const b of shelf.querySelectorAll('button')) b.setAttribute('aria-current', String(b.dataset.id === r?.id));
+  for (const b of shelf.querySelectorAll('button[data-id]')) b.setAttribute('aria-current', String(b.dataset.id === r?.id));
   credit.replaceChildren(r ? [r.credit, r.licence].filter(Boolean).join(' · ') : 'Your own audio');
   if (r?.url) credit.append(' · ', Object.assign(document.createElement('a'), { href: r.url, target: '_blank', rel: 'noopener', textContent: 'source' }));
 }
 async function pickRecord(r) {
+  cancelCommons();
   const me = ++pick;
   markRecord(r);
   if (!r.tracks) return houseRecord();
@@ -281,6 +301,121 @@ for (const r of RECORDS) {
   b.addEventListener('click', () => { pickRecord(r); b.blur(); });
   shelf.insertBefore(b, credit);
 }
+
+// ---------- Commons albums: fetch on demand, cut one track ahead ----------
+const commonsShelf = shelf.appendChild(document.createElement('section'));
+commonsShelf.id = 'commons-shelf';
+commonsShelf.innerHTML = '<h2>Albums from Wikimedia Commons</h2><p>CC0 recordings. Play one track while the next is prepared.</p><div id="commons-albums"></div><p id="commons-status" role="status"></p><p id="cache-status" role="status"></p><div id="commons-tracks"></div>';
+$('cache-status').textContent = window.__cacheUnavailable ? 'Local caching is unavailable. Use HTTPS or localhost with browser storage enabled.' : 'Downloads are saved on this device for replay and offline listening.';
+navigator.serviceWorker?.addEventListener('message', ({ data }) => {
+  if (data.type === 'cache-error') $('cache-status').textContent = 'Could not save a download. Free some browser storage; this track may need internet next time.';
+});
+for (const album of COMMONS_ALBUMS) {
+  const button = document.createElement('button');
+  button.dataset.album = album.id;
+  button.append(Object.assign(document.createElement('b'), { textContent: album.title }),
+    Object.assign(document.createElement('span'), { textContent: album.count + ' tracks' }));
+  button.addEventListener('click', () => chooseCommonsAlbum(album));
+  $('commons-albums').append(button);
+}
+function cancelCommons() {
+  S.album?.controller.abort(); S.album = null;
+  $('commons-status').textContent = '';
+  $('commons-tracks').replaceChildren();
+  for (const button of $('commons-albums').children) button.removeAttribute('aria-current');
+}
+function beginCommons(album, tracks = []) {
+  navigator.storage?.persist?.().catch(() => {});
+  cancelCommons();
+  const session = { album, tracks, index: 0, controller: new AbortController(), wantsPlay: true, waiting: true };
+  // Discard a previous cut and its callbacks, including a pending startup record.
+  masterWorker?.terminate(); masterWorker = null;
+  ++pick; S.pending = null; S.loaded = false; S.man = null; S.workerHasSource = false;
+  clearTimeout(S.cueTimer); setCue(true); setMotor(false);
+  S.album = session;
+  markRecord({ title: album.title, credit: album.by, licence: 'CC0', url: albumSource(album) });
+  for (const button of $('commons-albums').children) button.setAttribute('aria-current', String(button.dataset.album === album.id));
+  busy();
+  // Resume audio within the click gesture, before requesting album metadata.
+  if (!S.on) powerOn(); else ctx?.resume().catch(() => {});
+  setMotor(true);     // Stop must cancel the pending play request during buffering too.
+  return session;
+}
+async function chooseCommonsAlbum(album) {
+  const session = beginCommons(album);
+  $('commons-status').textContent = 'Loading album…';
+  try {
+    session.tracks = await loadCommonsAlbum(album, session.controller.signal);
+    if (S.album !== session) return;
+    renderCommonsTracks(session);
+    await playCommonsTrack(session, 0);
+  } catch (err) { commonsError(session, err); }
+}
+function renderCommonsTracks(session) {
+  $('commons-tracks').replaceChildren(...session.tracks.map((track, index) => {
+    const button = document.createElement('button');
+    button.dataset.track = index;
+    button.append(Object.assign(document.createElement('b'), { textContent: track.number + '. ' + track.title }),
+      Object.assign(document.createElement('span'), { textContent: fmt(track.duration) }));
+    button.addEventListener('click', () => chooseCommonsTrack(index));
+    return button;
+  }));
+}
+function chooseCommonsTrack(index) {
+  if (!S.album?.tracks[index]) return;
+  const { album, tracks } = S.album;
+  const session = beginCommons(album, tracks);
+  renderCommonsTracks(session);
+  playCommonsTrack(session, index);
+}
+function commonsError(session, err) {
+  if (S.album !== session || session.controller.signal.aborted) return;
+  session.waiting = false; session.failed = true;
+  setMotor(false);
+  idle(); status('');
+  $('commons-status').textContent = err.message || 'Could not load this track. Select it to retry.';
+}
+function prepareUpcoming(session, index) {
+  // Convert failure to a result immediately: a background download can fail long
+  // before the listener reaches this track, without an unhandled rejection.
+  return prepareCommonsTrack(session.tracks[index], condition(), session.controller.signal, (message) => {
+    if (S.album === session && session.waiting && session.index === index) $('commons-status').textContent = message;
+  }).then(result => ({ result }), error => ({ error }));
+}
+async function playCommonsTrack(session, index) {
+  if (S.album !== session) return;
+  session.index = index; session.waiting = true; session.failed = false;
+  const me = ++pick;
+  S.pending = null; S.loaded = false;
+  clearTimeout(S.cueTimer); setCue(true);
+  // Stop the old disc without changing the user's play/stop intent while buffering.
+  send({ t: 'motor', on: false });
+  busy(); $('commons-status').textContent = 'Preparing ' + session.tracks[index].title + '…';
+  for (const button of $('commons-tracks').children) button.setAttribute('aria-current', String(+button.dataset.track === index));
+  const track = session.tracks[index];
+  markRecord({ title: session.album.title, credit: session.album.by, licence: 'CC0', url: track.source });
+  try {
+    const prepared = session.next || prepareUpcoming(session, index);
+    session.next = null;
+    const { result, error } = await prepared;
+    if (S.album !== session || me !== pick) return;
+    if (error) throw error;
+    session.waiting = false;
+    gotRecord(result.rec, result.vis);
+    $('commons-status').textContent = `Track ${index + 1} of ${session.tracks.length}. ${session.album.by}.`;
+    if (index + 1 < session.tracks.length) session.next = prepareUpcoming(session, index + 1);
+  } catch (err) { commonsError(session, err); }
+}
+function advanceCommons(t) {
+  const album = S.album, rec = S.rec;
+  if (!album || album.waiting || album.failed || !rec || rec.pick !== pick || t.recSeq !== rec.seq) return;
+  const down = t.hc < 40e-6;
+  rec.lifted ||= !down;
+  if (!rec.lifted || !down || t.cueUp || !S.on || !S.motor || t.wp <= 0 || t.theta < rec.tracks.at(-1).theta1) return;
+  if (album.index + 1 < album.tracks.length) playCommonsTrack(album, album.index + 1);
+  else { setCue(true); setMotor(false); $('commons-status').textContent = 'Album finished. Select a track to play again.'; }
+}
+
 pickRecord(RECORDS.find((r) => r.id === (window.__boot?.id || 'rhapsody')) || RECORDS[0]);   // the record on the platter when the page opens
 $('f-audio').addEventListener('change', (e) => cutFiles(e.target.files));
 addEventListener('dragover', (e) => e.preventDefault());

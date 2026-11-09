@@ -41,6 +41,13 @@ $ npm run bench   # CPU cost of the engine per second of audio
 
 ## Records
 
+The Records shelf also offers two CC0 albums from Wikimedia Commons. Select an
+album to play it track by track, with the next track prepared in the background.
+The app, album listings and downloaded audio are cached locally for repeat and
+offline use. Playback still comes from simulated grooves; track changes include
+a short cueing gap. See [Commons albums and caching](docs/commons-albums.md) for
+sources, buffering behavior, browser requirements and cache maintenance.
+
 Cutting a whole side takes a while, so the records on the shelf are cut ahead of time and committed to `assets/`. The clean cut ships as 16-bit [DPCM](https://en.wikipedia.org/wiki/Differential_pulse-code_modulation) inside FLAC (within a quarter of a nanometre of the cut wall), and the page presses it with the seed. The source audio lives in `records/`, listed in [`src/records.js`](src/records.js).
 
 To add a record, or after changing the lathe, re-cut what's out of date (needs `ffmpeg`) and commit `assets/`:

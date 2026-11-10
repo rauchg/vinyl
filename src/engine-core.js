@@ -11,7 +11,7 @@ import { warpHeight } from './press.js';
 export const DT = 12, PH = 64, WLEN = 128;
 const IS2 = Math.SQRT1_2, SQ2 = Math.SQRT2;
 const CB = Math.cos(ARM_BETA), SB = Math.sin(ARM_BETA);
-const IP = 0.017, KD = 0.4, KB = 10.7, TQMAX = 0.045, COFF = 0.004, BEAR_V = 2e-4, BEAR_C = 3e-4;   // platter drive
+const IP = 0.017, KD = 0.4, KB = 10.7, TQMAX = 0.045, TQ_DJ = 0.22, COFF = 0.004, BEAR_V = 2e-4, BEAR_C = 3e-4;   // platter drive; TQ_DJ is the torque of a DJ direct-drive motor
 const KHAND = IP * 120 * 120, CHAND = 2 * IP * 120;
 const Z_UP = 5e-3, Z_DOWN = -2e-3, V_UP = 0.03, V_DOWN = 0.006, WH = 40, VE2 = 1e-6;
 const Z_TOP = 0.012, CV = 0.03;   // vertical travel stop, vertical bearing damping (N s/m)
@@ -49,10 +49,15 @@ export function process(e, outL, outR, N) {
   const S = e.s;
   let thp = S[0], wp = S[1], al = S[2], ald = S[3], zb = S[4], zbd = S[5], xi = S[6], xid = S[7], ze = S[8], zed = S[9], mwx = S[10], mwz = S[11], gn = S[12], xgP = S[13], hcP = S[14], dpIn = S[15], dpOut = S[16], zs = S[17], zcue = S[18], rp = S[19] | 0, wj0 = S[20] | 0, t = S[21], drift = S[22], dragTq = S[23], bs = S[24], vtfS = S[25];
 
-  const motor = e.motor, hpOn = e.hpOn, wSet = e.wSet, flut = p.flutter;
+  const motor = e.motor, hpOn = e.hpOn, wSet = e.wSet, flut = p.flutter, tqMax = e.dj ? TQ_DJ : TQMAX, off = e.off;
+  // for a few ms after a jump the tip reads both grooves, the walls it is leaving and the walls it has landed on (see Engine.land)
+  const reader2 = e.reader2, wIn2 = e.wIn2, wOut2 = e.wOut2, blendN = e.blendN, shift = e.blendShift;
+  let blendK = e.blendK, wj2 = e.wj2;
   for (let i = 0; i < N; i++) {
     t += dtS;
     const hOn = e.hOn, hAl = e.hAl;
+    let blend = 0;
+    if (blendK > 0) { blendK--; blend = 0.5 - 0.5 * Math.cos(Math.PI * blendK / blendN); }
     // ---------- platter: motor + belt, bearing, stylus drag, a hand on the record ----------
     drift += kdr * ((rand() - 0.5) * 0.07 - drift);
     const wref = wSet * (1 + flut * (2.5e-4 * Math.sin(TAU * 4.6 * t) + drift));
@@ -60,8 +65,11 @@ export function process(e, outL, outR, N) {
     if (motor) {
       bs += (wref - wp) * dtS;
       tq = KB * bs + KD * (wref - wp);
-      if (tq > TQMAX) { tq = TQMAX; bs = Math.min(bs, TQMAX / KB); } else if (tq < -TQMAX) { tq = -TQMAX; bs = Math.max(bs, -TQMAX / KB); }
-    } else bs = 0;
+      if (tq > tqMax) { tq = tqMax; bs = Math.min(bs, tqMax / KB); } else if (tq < -tqMax) { tq = -tqMax; bs = Math.max(bs, -tqMax / KB); }
+    } else {
+      bs = 0;
+      if (e.dj) tq = Math.max(-tqMax, Math.min(tqMax, -KD * wp));   // the electronic brake
+    }
     tq -= BEAR_V * wp + BEAR_C * wp / (Math.abs(wp) + 0.02) + dragTq;
     if (hpOn) tq += KHAND * (e.hpT - thp) - CHAND * wp;
     wp += tq / IP * dtS; thp += wp * dtS;
@@ -107,8 +115,8 @@ export function process(e, outL, outR, N) {
     const rT = r + xi * cLr;
     let flat = 1, rg = 0, rg1 = 0, Th = 0;
     if (rTab) {
-      if (hcP > R_ + 30e-6) gn = Math.round((thetaForRadius(rTab, rT) - th0) / TAU);
-      Th = th0 + TAU * gn;
+      if (hcP > R_ + 30e-6) gn = Math.round((thetaForRadius(rTab, rT) - th0 - off) / TAU);
+      Th = th0 + off + TAU * gn;
       if (Th >= thetaEnd) { const k = Math.floor((Th - thetaEnd) / TAU) + 1; gn -= k; Th -= k * TAU; }   // locked groove loops
       if (Th >= 0) {
         rg = grooveRadius(rTab, Th);
@@ -140,6 +148,17 @@ export function process(e, outL, outR, N) {
           for (let q = 0; q < DT; q++) {
             let c = C[o + q]; c += g * (C[o + DT + q] - c);
             din += c * wIn[ib + q]; dout += c * wOut[ib + q];
+          }
+          if (blend > 0) {                           // the walls being left, still running under the tip
+            const pos2 = (thT + shift) * kD, j2 = Math.floor(pos2) | 0;
+            if (j2 - 5 < wj2 || j2 + 6 >= wj2 + WLEN) { wj2 = (j2 - 32) | 0; reader2.fill(wj2, WLEN, wIn2, wOut2); }
+            const f2 = (pos2 - j2) * PH, ph2 = f2 | 0, g2 = f2 - ph2, o2 = ph2 * DT, ib2 = (j2 - 5 - wj2) | 0;
+            let oldIn = 0, oldOut = 0;
+            for (let q = 0; q < DT; q++) {
+              let c = C[o2 + q]; c += g2 * (C[o2 + DT + q] - c);
+              oldIn += c * wIn2[ib2 + q]; oldOut += c * wOut2[ib2 + q];
+            }
+            din += (oldIn - din) * blend; dout += (oldOut - dout) * blend;
           }
         }
         const vx = (xg - xgP) * fsF, vz = (hc - hcP) * fsF;
@@ -218,6 +237,7 @@ export function process(e, outL, outR, N) {
     if (!(Math.abs(wp) < 60)) { wp = 0; thp = 0; bs = 0; dragTq = 0; }
     l1 = l2 = l3 = l4 = r1 = r2 = r3 = r4 = 0; ringL.fill(0); ringR.fill(0); hcP = 1; e.blown = (e.blown | 0) + 1;
   }
+  e.blendK = blendK; e.wj2 = wj2;
   fz[0] = l1; fz[1] = l2; fz[2] = l3; fz[3] = l4; fz[4] = r1; fz[5] = r2; fz[6] = r3; fz[7] = r4;
   fz[8] = s1; fz[9] = s2; fz[10] = s3; fz[11] = s4;
   S[0] = thp; S[1] = wp; S[2] = al; S[3] = ald; S[4] = zb; S[5] = zbd; S[6] = xi; S[7] = xid; S[8] = ze; S[9] = zed; S[10] = mwx; S[11] = mwz; S[12] = gn; S[13] = xgP; S[14] = hcP; S[15] = dpIn; S[16] = dpOut; S[17] = zs; S[18] = zcue; S[19] = rp; S[20] = wj0; S[21] = t; S[22] = drift; S[23] = dragTq; S[24] = bs; S[25] = vtfS;

@@ -57,12 +57,14 @@
 <link rel="modulepreload" href="src/shaders.js"><link rel="modulepreload" href="src/dsp.js"><link rel="modulepreload" href="src/geometry.js">
 <link rel="modulepreload" href="src/records.js"><link rel="modulepreload" href="src/label.js"><link rel="modulepreload" href="src/press.js">
 <link rel="modulepreload" href="src/worklet.js"><link rel="modulepreload" href="src/engine.js"><link rel="modulepreload" href="src/engine-core.js"><link rel="modulepreload" href="src/groove.js">
+<link rel="modulepreload" href="src/turntable.js"><link rel="modulepreload" href="src/audio-context.js"><link rel="modulepreload" href="src/tempo.js">
+<link rel="modulepreload" href="src/mixer.js"><link rel="modulepreload" href="src/desk.js"><link rel="modulepreload" href="src/controller.js"><link rel="modulepreload" href="src/booth.js">
 <style>
   :root { --fg: #e8e4dd; --soft: #c4c0b9; --dim: #85817a; --line: rgba(255,255,255,.1); --panel: rgba(12,12,13,.78); --acc: #ffb454; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: #030304; color: var(--fg); font: 12px/1.45 ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif; overflow: hidden; -webkit-font-smoothing: antialiased; }
-  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; opacity: 0; transition: opacity .55s ease-out; }
-  .ready #gl { opacity: 1; }
+  .deck-gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; opacity: 0; transition: opacity .55s ease-out; }
+  .ready .deck-gl { opacity: 1; }
   /* progress bar for whatever record is loading (driven by the inline script in <head>) */
   #loader { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 7; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 14px 18px 10px; border-radius: 10px; opacity: 0; transition: opacity .25s; pointer-events: none; color: var(--dim); font: 10px var(--mono); }
   .loading #loader { opacity: 1; }
@@ -80,55 +82,56 @@
   #teaser p { margin: 0; color: var(--dim); }
   .link { all: unset; cursor: pointer; color: var(--fg); border-bottom: 1px solid rgba(255,255,255,.3); }
   .link:hover { border-color: var(--fg); }
-  #toggles { position: fixed; top: 12px; right: 14px; display: flex; gap: 2px; z-index: 6; }
-  #toggles button { all: unset; cursor: pointer; padding: 5px 10px; border-radius: 999px; color: var(--dim); }
-  #toggles button:hover { color: var(--fg); }
-  #toggles button[hidden] { display: none; }
+  .toggles { position: fixed; top: 12px; right: 14px; display: flex; gap: 2px; z-index: 6; }
+  .toggles button { all: unset; cursor: pointer; padding: 5px 10px; border-radius: 999px; color: var(--dim); }
+  .toggles button:hover { color: var(--fg); }
+  .toggles button[hidden] { display: none; }
   #credit { position: fixed; right: 24px; bottom: 13px; z-index: 6; display: flex; gap: 20px; align-items: baseline; color: var(--dim); }   /* same size and spacing as the top-right labels */
   #credit a { color: inherit; text-decoration: none; }
   #credit a:hover, #t-reset:hover { color: var(--fg); }
   #t-reset { all: unset; cursor: pointer; }
   #t-reset[hidden] { display: none; }
-  #toggles button[aria-pressed=true] { color: var(--fg); background: rgba(255,255,255,.09); }
+  .toggles button[aria-pressed=true] { color: var(--fg); background: rgba(255,255,255,.09); }
   #foot { position: fixed; left: 18px; bottom: 14px; display: flex; gap: 14px; color: var(--dim); font-variant-numeric: tabular-nums; pointer-events: none; }
   /* Records toggle doubles as "now playing": level bars that move while a track plays, the title, the time */
-  #toggles #t-records { display: inline-flex; align-items: center; gap: 8px; max-width: 360px; }
-  #now-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  #now-time { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  #now-time:empty { display: none; }
+  .toggles .t-records { display: inline-flex; align-items: center; gap: 8px; max-width: 360px; }
+  .now-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .now-time { color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .now-time:empty { display: none; }
   .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: 10px; flex: none; }
   .eq i { width: 2px; height: 100%; border-radius: 1px; background: currentColor; transform: scaleY(.25); transform-origin: bottom; transition: transform .4s; }
-  #t-records.playing .eq { color: var(--acc); }
-  #t-records.playing .eq i { animation: eq .9s ease-in-out infinite alternate; }
-  #t-records.playing .eq i:nth-child(2) { animation-duration: 1.15s; animation-delay: -.5s; }
-  #t-records.playing .eq i:nth-child(3) { animation-duration: .7s; animation-delay: -.2s; }
-  #t-records.playing .eq i:nth-child(4) { animation-duration: 1s; animation-delay: -.8s; }
+  .t-records.playing .eq { color: var(--acc); }
+  .t-records.playing .eq i { animation: eq .9s ease-in-out infinite alternate; }
+  .t-records.playing .eq i:nth-child(2) { animation-duration: 1.15s; animation-delay: -.5s; }
+  .t-records.playing .eq i:nth-child(3) { animation-duration: .7s; animation-delay: -.2s; }
+  .t-records.playing .eq i:nth-child(4) { animation-duration: 1s; animation-delay: -.8s; }
   @keyframes eq { 0% { transform: scaleY(.2); } 45% { transform: scaleY(1); } 100% { transform: scaleY(.45); } }
-  @media (prefers-reduced-motion: reduce) { #t-records.playing .eq i { animation: none; transform: scaleY(.7); } }
+  @media (prefers-reduced-motion: reduce) { .t-records.playing .eq i { animation: none; transform: scaleY(.7); } }
 
   .panel { position: fixed; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; backdrop-filter: blur(16px); padding: 14px; z-index: 4; }
-  #ctl { top: 46px; right: 14px; width: 236px; max-height: calc(100% - 86px); overflow: auto; }
-  #hud { left: 16px; bottom: 40px; width: 292px; padding: 10px; opacity: 0; pointer-events: none; transition: opacity .5s; }
-  #hud.on { opacity: 1; }   /* only while the needle is on the record */
+  .ctl { top: 46px; right: 14px; width: 236px; max-height: calc(100% - 86px); overflow: auto; }
+  .hud { left: 16px; bottom: 40px; width: 292px; padding: 10px; opacity: 0; pointer-events: none; transition: opacity .5s; }
+  .hud.on { opacity: 1; }   /* only while the needle is on the record */
   h2 { font-size: 10px; margin: 14px 0 6px; color: var(--dim); letter-spacing: .14em; text-transform: uppercase; font-weight: 500; }
   h2:first-child { margin-top: 0; }
+  .row[hidden] { display: none; }
   .row { display: flex; gap: 6px; align-items: center; margin: 5px 0; }
   .row label { flex: 0 0 76px; color: var(--dim); }
   .row output { flex: 0 0 34px; text-align: right; font: 11px var(--mono); color: var(--soft); }
   input[type=range] { flex: 1; min-width: 0; accent-color: var(--acc); height: 14px; }
-  #ctl button, select, .file { font: inherit; color: var(--fg); background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; cursor: pointer; flex: 1; text-align: center; }
-  #ctl button:hover, .file:hover { background: rgba(255,255,255,.12); }
-  #ctl button.on { background: var(--acc); color: #1a1206; border-color: transparent; }
-  #shelf { top: 46px; right: 14px; width: 268px; max-height: calc(100% - 62px); overflow: auto; padding: 8px; }
-  #shelf button { all: unset; box-sizing: border-box; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
-  #shelf button:hover, #shelf button:focus-visible { background: rgba(255,255,255,.07); }
-  #shelf button b { font-weight: 400; } #shelf button span { color: var(--dim); white-space: nowrap; }
-  #shelf button[aria-current=true] b { color: var(--acc); }
-  #shelf p { margin: 8px 8px 4px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
-  #shelf a { color: var(--soft); }
-  #scope { width: 100%; height: 62px; display: block; border-radius: 6px; }
-  #stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; margin-top: 8px; font: 10px/1.4 var(--mono); }
-  #stats span { color: var(--dim); } #stats b { font-weight: 400; float: right; color: var(--soft); }
+  .ctl button, select, .file { font: inherit; color: var(--fg); background: rgba(255,255,255,.06); border: 1px solid var(--line); border-radius: 7px; padding: 5px 8px; cursor: pointer; flex: 1; text-align: center; }
+  .ctl button:hover, .file:hover { background: rgba(255,255,255,.12); }
+  .ctl button.on { background: var(--acc); color: #1a1206; border-color: transparent; }
+  .shelf { top: 46px; right: 14px; width: 268px; max-height: calc(100% - 62px); overflow: auto; padding: 8px; }
+  .shelf button { all: unset; box-sizing: border-box; display: flex; justify-content: space-between; align-items: baseline; gap: 12px; width: 100%; padding: 6px 8px; border-radius: 7px; cursor: pointer; }
+  .shelf button:hover, .shelf button:focus-visible { background: rgba(255,255,255,.07); }
+  .shelf button b { font-weight: 400; } .shelf button span { color: var(--dim); white-space: nowrap; }
+  .shelf button[aria-current=true] b { color: var(--acc); }
+  .shelf p { margin: 8px 8px 4px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+  .shelf a { color: var(--soft); }
+  .scope { width: 100%; height: 62px; display: block; border-radius: 6px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 12px; margin-top: 8px; font: 10px/1.4 var(--mono); }
+  .stats span { color: var(--dim); } .stats b { font-weight: 400; float: right; color: var(--soft); }
 
   /* only the pill takes clicks: the scene under the overlay can be dragged and zoomed, and tapping it also powers on */
   #power { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,.28); z-index: 5; opacity: 0; pointer-events: none; transition: opacity .4s ease-out .25s; }
@@ -151,28 +154,153 @@
   dialog code { font: 11.5px var(--mono); color: var(--fg); }
   dialog form { margin: 18px 0 0; text-align: right; }
   dialog form button { font: inherit; color: var(--fg); background: rgba(255,255,255,.08); border: 1px solid var(--line); border-radius: 999px; padding: 6px 16px; cursor: pointer; }
+  /* two decks and the mixer */
+  .tag { display: none; color: var(--acc); font-weight: 600; flex: none; }
+  .dj .tag { display: inline; }
+  .dj #teaser, .dj #t-deck { display: none; }
+  .dj #gl { right: auto; width: 50%; width: round(down, 50%, 1px); }   /* whole pixels: a fraction would blur the line where the two pictures meet */
+  #gl-b { left: 50%; left: round(down, 50%, 1px); width: 50%; width: calc(100% - round(down, 50%, 1px)); }
+  .dj #vig { background: radial-gradient(ellipse at 50% 46%, transparent 42%, rgba(0,0,0,.6) 100%); }
+  .dj #vig::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent calc(50% - 56px), #030304 50%, transparent calc(50% + 56px)); transition: opacity .25s; }   /* a deck in close-up is lit on its own: a shadow hides where the two pictures meet */
+  .booth:not(.zoomed) #vig::after { opacity: 0; }                         /* one picture across the window: nothing to hide */
+  .dj .toggles { max-width: calc(50% - 20px); }
+  .dj #toggles { right: auto; left: 14px; }
+  .dj .toggles .t-records { flex: 0 1 auto; min-width: 0; max-width: none; }
+  .dj #ctl, .dj #shelf { right: auto; left: 14px; }
+  #hud-b { left: auto; right: 16px; }
+  .mx { display: grid; grid-template-columns: 1fr 42px 1fr; align-items: center; gap: 4px; height: 19px; }
+  .mx span { text-align: center; color: var(--dim); font-size: 10px; }
+  .mx input { width: 100%; }
+  .mx input[type=checkbox] { justify-self: center; width: 13px; height: 13px; margin: 0; accent-color: var(--acc); }
+  .mx-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 10px; }
+  .mx-end { display: flex; align-items: center; gap: 6px; height: 19px; margin-top: 3px; color: var(--dim); font-size: 10px; white-space: nowrap; }
+  .mx-end input[type=range] { flex: 1 1 0; min-width: 0; }
+  .mx-end label { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+  .mx-end input[type=checkbox] { margin: 0; accent-color: var(--acc); }
+  .mx-cross { grid-template-columns: 14px 1fr 14px; height: auto; margin-top: 5px; padding-top: 6px; border-top: 1px solid var(--line); }
+  /* the deck controllers and the mixer, in a row under the turntables */
+  :root { --dx-h: 180px; --jog: 138px; }
+  #console { position: fixed; left: 16px; right: 16px; bottom: 40px; height: var(--dx-h); display: flex; justify-content: center; gap: 8px; z-index: 3; pointer-events: none; }
+  #console[hidden], #mixer[hidden], .dx[hidden] { display: none; }
+  #console > .panel { position: static; pointer-events: auto; }
+  #mixer { flex: 0 1 360px; min-width: 0; display: flex; flex-direction: column; justify-content: center; padding: 9px 10px; overflow-y: auto; }
+  .dj #t-pro { display: none; }
+  .dx { flex: 1 1 0; min-width: 0; max-width: 540px; padding: 8px 10px; display: grid; grid-template: "read read read read" 18px "trans jog fader side" minmax(0, 1fr) / 70px var(--jog) 24px minmax(84px, 1fr); gap: 6px 8px; -webkit-user-select: none; user-select: none; }
+  .dx button { all: unset; box-sizing: border-box; cursor: pointer; text-align: center; border: 1px solid var(--line); border-radius: 6px; background: rgba(255,255,255,.06); color: var(--soft); touch-action: manipulation; }
+  .dx button:hover { background: rgba(255,255,255,.12); }
+  .dx button:focus-visible { outline: 1px solid var(--acc); }
+  .dx-read { grid-area: read; display: flex; align-items: center; gap: 10px; min-width: 0; font: 11px/18px var(--mono); color: var(--dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .dx .dx-name { all: unset; color: var(--acc); font-weight: 600; cursor: default; }
+  .dx-time { flex: 0 1 auto; min-width: 0; overflow: hidden; }         /* the first to give way when the row is short */
+  .dx-tempo { flex: none; }
+  .dx-pitch { flex: none; }
+  .dx-tempo b { font-size: 13px; font-weight: 500; color: var(--fg); }
+  .dx .dx-tap, .dx .dx-sync { flex: none; padding: 0 9px; height: 18px; line-height: 16px; font-size: 10px; }
+  .dx .dx-sync { margin-left: auto; }
+  .dx .dx-sync.on { background: var(--acc); color: #1a1206; border-color: transparent; }
+  .dx-led { flex: none; width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.14); }
+  .dx-led.on { background: #5dff8f; box-shadow: 0 0 6px #5dff8f; }
+  .dx-trans { grid-area: trans; display: grid; grid-template-rows: 1fr 1fr; gap: 6px; }
+  .dx-trans button { display: grid; place-items: center; font-size: 14px; font-weight: 600; color: var(--fg); border-radius: 9px; }
+  .dx .dx-play.on { background: var(--acc); color: #1a1206; border-color: transparent; }
+  .dx .dx-cue.on { border-color: var(--acc); color: var(--acc); }
+  .dx-jog { grid-area: jog; position: relative; align-self: center; width: var(--jog); height: var(--jog); border-radius: 50%; cursor: grab; touch-action: none; background: repeating-conic-gradient(rgba(255,255,255,.2) 0 1.5deg, transparent 1.5deg 7.5deg), #161618; box-shadow: inset 0 0 0 1px var(--line); }
+  .dx-jog.held, .dx-jog.nudging { cursor: grabbing; }
+  .dx-jog.nudging { box-shadow: inset 0 0 0 1px var(--acc); }
+  .dx-plate { position: absolute; inset: 14%; border-radius: 50%; background: radial-gradient(circle, #2b2a28 0 23%, #0c0c0d 24%, #131315 60%, #0c0c0d 100%); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); will-change: transform; }
+  .dx-plate u { position: absolute; left: 50%; top: 5%; width: 2px; height: 18%; margin-left: -1px; border-radius: 1px; background: var(--acc); }
+  .dx-jog.held .dx-plate { box-shadow: inset 0 0 0 1px var(--acc); }
+  input.dx-fader { grid-area: fader; writing-mode: vertical-lr; width: 24px; height: 100%; margin: 0; }
+  .dx-side { grid-area: side; display: flex; flex-direction: column; gap: 4px; min-width: 0; min-height: 0; }
+  .dx-pads { flex: 1 1 0; min-height: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .dx-pads button { font: 10px var(--mono); color: var(--dim); }
+  .dx .dx-pad.set { background: rgba(255,180,84,.2); border-color: rgba(255,180,84,.6); color: var(--acc); }
+  .dx-loops { display: flex; flex-direction: column; gap: 3px; }
+  .dx-cap { font-size: 9px; line-height: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); }
+  .dx-inout, .dx-beats { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 3px; }
+  .dx-loops button { height: 19px; font: 10px/17px var(--mono); }
+  .dx .dx-loop.on { background: var(--acc); color: #1a1206; border-color: transparent; }
+  /* two decks on a wide window: each readout at the outer end of the row, cut down to one column */
+  @media (min-width: 1130px) {
+    .dj { --hud-w: clamp(176px, 15vw, 292px); }
+    .dj #console { left: calc(24px + var(--hud-w)); right: calc(24px + var(--hud-w)); }
+    .dj .hud { width: var(--hud-w); height: var(--dx-h); padding: 8px; }
+    .dj .scope { height: 32px; }
+    .dj .stats { grid-template-columns: 1fr; gap: 0; margin-top: 4px; font-size: 9.5px; line-height: 12px; }
+  }
+  @media (min-width: 1130px) and (max-width: 1319px) { .dj { --jog: 120px; } }
+  @media (max-width: 1129px) { .dj .hud { bottom: calc(48px + var(--dx-h)); } }
+  @media (max-width: 1179px) { .pro:not(.dj) .hud { bottom: calc(48px + var(--dx-h)); } }
+  @media (max-width: 1100px) {
+    :root { --jog: 104px; }
+    .dx-unit { display: none; }
+    .dx-read { gap: 6px; }
+    .dx .dx-tap, .dx .dx-sync { padding: 0 6px; }
+    #mixer { flex-basis: 300px; }
+    .dx { padding: 8px; grid-template-columns: 60px var(--jog) 20px minmax(72px, 1fr); gap: 6px; }
+    input.dx-fader { width: 20px; }
+  }
+  @media (max-width: 860px) { .dj .hud { display: none; } }   /* no room for a readout on each side */
+  /* two decks in a narrow window: a panel can't fit the jog wheel beside everything else. If the window is tall enough the wheel goes above the pads, if not it goes */
+  @media (min-width: 641px) and (max-width: 860px) {
+    .dj #mixer { flex-basis: 150px; }
+    .dj .dx { grid-template: "read read read" 18px "trans fader side" minmax(0, 1fr) / 56px 20px minmax(0, 1fr); }
+    .dj .dx-jog { display: none; }
+    .dj .dx-read { gap: 6px; font-size: 10px; }
+    .dj .dx-tempo b { font-size: 11px; }
+  }
+  @media (min-width: 641px) and (max-width: 860px) and (min-height: 640px) {
+    .dj { --dx-h: 262px; --jog: 100px; }
+    .dj .dx { grid-template: "read read read" 18px "trans jog fader" var(--jog) "side side side" minmax(0, 1fr) / 56px minmax(0, 1fr) 20px; }
+    .dj .dx-jog { display: block; justify-self: center; }
+  }
+  @media (min-width: 1000px) { .booth #mixer:not(:focus-within) { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); } }   /* the mixer is in the picture; these sliders stay for the keyboard */
   @media (max-width: 900px) { #teaser { max-width: 210px; } }
   @media (max-width: 640px) {                      /* phones: track line on its own row above the credits */
     #teaser { max-width: calc(100% - 36px); top: calc(14px + env(safe-area-inset-top)); }
-    #toggles { top: calc(52px + env(safe-area-inset-top)); }   /* own row under the teaser: room for what's playing */
+    .toggles { top: calc(52px + env(safe-area-inset-top)); }   /* own row under the teaser: room for what's playing */
     #credit { bottom: calc(12px + env(safe-area-inset-bottom)); }
     #foot { right: 18px; bottom: calc(32px + env(safe-area-inset-bottom)); }
-    #toggles #t-records { max-width: calc(100vw - 120px); }
-    #hud { width: min(272px, calc(100% - 32px)); padding: 7px; bottom: calc(56px + env(safe-area-inset-bottom)); }
-    #scope { height: 40px; }
-    #stats { font-size: 9px; gap: 0 10px; margin-top: 5px; }
-    #ctl, #shelf { width: min(236px, calc(100% - 28px)); top: calc(88px + env(safe-area-inset-top)); max-height: calc(100% - 164px); }
-    #ctl { padding: 9px 10px; font-size: 11px; }          /* compact: leave most of the deck visible */
-    #ctl h2 { margin: 9px 0 3px; font-size: 9px; }
-    #ctl .row { margin: 3px 0; gap: 5px; }
-    #ctl .row label { flex-basis: 62px; }
-    #ctl .row output { flex-basis: 30px; font-size: 10px; }
-    #ctl button, #ctl select, #ctl .file { padding: 3px 6px; border-radius: 6px; }
+    .toggles .t-records { max-width: calc(100vw - 120px); }
+    .hud { width: min(272px, calc(100% - 32px)); padding: 7px; bottom: calc(56px + env(safe-area-inset-bottom)); }
+    .scope { height: 40px; }
+    .stats { font-size: 9px; gap: 0 10px; margin-top: 5px; }
+    .ctl, .shelf { width: min(236px, calc(100% - 28px)); top: calc(88px + env(safe-area-inset-top)); max-height: calc(100% - 164px); }
+    .ctl { padding: 9px 10px; font-size: 11px; }          /* compact: leave most of the deck visible */
+    .ctl h2 { margin: 9px 0 3px; font-size: 9px; }
+    .ctl .row { margin: 3px 0; gap: 5px; }
+    .ctl .row label { flex-basis: 62px; }
+    .ctl .row output { flex-basis: 30px; font-size: 10px; }
+    .ctl button, .ctl select, .ctl .file { padding: 3px 6px; border-radius: 6px; }
+    /* two decks: one above the other, the mixer under them */
+    .dj #gl { width: 100%; height: calc(50% - 150px); }
+    .dj #vig { background: linear-gradient(180deg, transparent calc(50% - 190px), #030304 calc(50% - 150px), transparent calc(50% - 110px)), radial-gradient(ellipse at 50% 46%, transparent 42%, rgba(0,0,0,.6) 100%); }
+    .dj #vig::after { display: none; }
+    #gl-b { left: 0; width: 100%; top: calc(50% - 150px); height: calc(50% + 150px); }
+    .dj .toggles { top: calc(10px + env(safe-area-inset-top)); }
+    .dj .ctl, .dj .shelf { top: calc(46px + env(safe-area-inset-top)); max-height: calc(100% - 250px); }
+    .dj .now-time { display: none; }
+    .dj #credit { display: none; }
+    /* the console: one deck's controller at a time (the letter switches), without the jog: the record itself is under the finger */
+    #console { flex-direction: column; height: auto; left: 8px; right: 8px; bottom: calc(30px + env(safe-area-inset-bottom)); gap: 5px; }
+    #mixer { flex: none; }
+    .dx { flex: none; max-width: none; padding: 6px 8px; grid-template: "read read" 18px "trans side" 64px "fader fader" 16px / 116px minmax(0, 1fr); gap: 4px 8px; }
+    .dj .dx:not(.front) { display: none; }
+    .dx .dx-name { cursor: pointer; padding: 0 6px; margin-left: -6px; }
+    .dx-jog { display: none; }
+    .dx-trans { grid-template-rows: none; grid-template-columns: 1fr 1fr; }
+    input.dx-fader { writing-mode: horizontal-tb; width: 100%; height: 16px; }
+    .dx-side { flex-direction: row; gap: 6px; }
+    .dx-pads, .dx-loops { flex: 1 1 0; min-width: 0; }
+    .dx-cap { display: none; }
+    .dx-loops { justify-content: space-between; }
+    .dx-loops button { height: 30px; line-height: 28px; }
+    .pro:not(.dj) .hud { bottom: calc(166px + env(safe-area-inset-bottom)); }
   }
 </style>
 </head>
 <body>
-<canvas id="gl"></canvas>
+<canvas id="gl" class="deck-gl"></canvas>
 <div id="vig"></div>
 <div id="loader" class="wait"><div class="bar"><i id="loader-fill"></i></div><span id="loader-pct"></span></div>
 
@@ -180,17 +308,19 @@
   <p>A physical simulation of how a record player makes sound. <button class="link" id="b-more">More</button></p>
 </header>
 
-<nav id="toggles">
-  <button id="t-records" aria-pressed="false" title="Records"><span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="now-title">Records</span><span id="now-time"></span></button>
+<nav id="toggles" class="toggles">
+  <button id="t-records" class="t-records" aria-pressed="false" title="Records"><span class="tag" id="now-tag"></span><span class="eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span id="now-title" class="now-title">Records</span><span id="now-time" class="now-time"></span></button>
   <button id="t-ctl" aria-pressed="false">Controls</button>
+  <button id="t-pro" hidden aria-pressed="false" title="DJ controls for this deck: Play and Cue, jog wheel, pitch, hot cues, loops and tempo">Controller</button>
+  <button id="t-deck" hidden title="Put a second turntable and a mixer next to this one">Add deck</button>
 </nav>
 
 <div id="credit"><button id="t-reset" hidden>Reset view</button><a href="https://x.com/rauchg" target="_blank" rel="noopener">@rauchg</a><a href="https://github.com/rauchg/vinyl" target="_blank" rel="noopener">Source</a></div>
 <div id="foot"><span id="status"></span></div>
 
-<section id="hud" class="panel">
-  <canvas id="scope" width="540" height="124" title="The groove walls passing under the stylus"></canvas>
-  <div id="stats">
+<section id="hud" class="panel hud">
+  <canvas id="scope" class="scope" width="540" height="124" title="The groove walls passing under the stylus"></canvas>
+  <div id="stats" class="stats">
     <div><span>speed</span><b id="s-rpm">-</b></div><div><span>groove</span><b id="s-vg">-</b></div>
     <div><span>radius</span><b id="s-r">-</b></div><div><span>tracking error</span><b id="s-err">-</b></div>
     <div><span>left wall</span><b id="s-nl">-</b></div><div><span>right wall</span><b id="s-nr">-</b></div>
@@ -199,7 +329,7 @@
   </div>
 </section>
 
-<section id="ctl" class="panel" hidden>
+<section id="ctl" class="panel ctl" hidden>
   <div class="row"><button id="b-start">Start</button><button id="b-cue">Cue</button></div>
   <div class="row"><button data-rpm="33.3333" class="on">33</button><button data-rpm="45">45</button><button data-rpm="78.26">78</button></div>
   <div class="row"><label>Volume</label><input id="p-volume" type="range" min="0" max="1" step="0.01" value="1"><output></output></div>
@@ -218,9 +348,16 @@
   <div class="row"><label>Off-centre</label><input id="c-offCenter" type="range" min="0" max="1.5" step="0.05" value="0.15"><output></output></div>
   <div class="row"><button id="b-press">Press again</button><label class="file" for="f-audio">Cut a file</label><input id="f-audio" type="file" accept="audio/*" multiple hidden></div>
   <div class="row"><button id="b-bump">Knock the table</button></div>
+  <div class="row" id="r-remove" hidden><button id="b-remove">Remove this deck</button></div>
 </section>
 
-<section id="shelf" class="panel" hidden></section>
+<section id="shelf" class="panel shelf" hidden></section>
+
+<section id="console" aria-label="Deck controls" hidden>
+  <div id="dx-a" class="panel dx" aria-label="Deck A controls"></div>
+  <div id="mixer" class="panel" aria-label="Mixer" hidden></div>
+  <div id="dx-b" class="panel dx" aria-label="Deck B controls" hidden></div>
+</section>
 
 <dialog id="more">
   <h3>A record player simulated "from the groove up"</h3>
@@ -230,6 +367,7 @@
   <p><strong>2. Press.</strong> The pressing plant (<a href="https://github.com/rauchg/vinyl/blob/main/src/press.js" target="_blank" rel="noopener"><code>press.js</code></a>) changes the geometry itself: wall roughness, dust, scratches, warp, an off-centre hole, groove echo. Nothing in it is an audio effect. It is seeded, so the same record always presses the same way.</p>
   <p><strong>3. Play.</strong> The engine (<a href="https://github.com/rauchg/vinyl/blob/main/src/engine-core.js" target="_blank" rel="noopener"><code>engine-core.js</code></a>, <a href="https://github.com/rauchg/vinyl/blob/main/src/groove.js" target="_blank" rel="noopener"><code>groove.js</code></a>) runs on the audio thread. It moves a stylus tip weighing a third of a milligram, on a springy cantilever at the end of a pivoting arm, against both walls <span id="d-rate">hundreds of thousands of</span> times a second, and turns that motion into the voltage of a moving-magnet cartridge.</p>
   <p><strong>4. Draw.</strong> The deck (<a href="https://github.com/rauchg/vinyl/blob/main/src/render.js" target="_blank" rel="noopener"><code>render.js</code></a>) is WebGL2, and the disc is drawn from the cut itself: the actual spiral, lit by how hard each revolution is modulated. The small view in the corner is the real groove wall passing under the stylus.</p>
+  <p><strong>And mix.</strong> <em>Add deck</em> puts a second turntable and a mixer next to this one. Both engines play into a mixer on the audio thread (<a href="https://github.com/rauchg/vinyl/blob/main/src/desk-worklet.js" target="_blank" rel="noopener"><code>desk-worklet.js</code></a>), and each track's tempo is read off the groove walls, so the decks can be synced.</p>
   <p><strong>"Real", procedural flaws.</strong></p>
   <ul>
     <li>Hiss and crackle are roughness and dust on the walls. A scratch ticks once per turn because the needle crosses it once per turn.</li>

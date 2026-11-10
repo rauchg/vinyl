@@ -27,6 +27,7 @@ function warmup(fs) {
   e.setMotor(true); e.wp = e.wSet; drop(0.1445); run(0.3);                 // tracking a groove
   e.platterHand(true); for (let i = 0; i < 24; i++) { e.platterMove(i < 12 ? -0.05 : 0.05); run(0.005); } e.platterHand(false);   // scratch
   e.bump(4); run(0.12);                                                    // knock: skips grooves
+  e.jump(30); run(0.03); e.setLoop(40, 40.3); e.jump(40); run(0.2); e.setLoop();   // a hot cue, and a loop
   e.hand(true, e.al + 0.03); run(0.08); e.hand(false); run(0.1);           // hand on the headshell
   e.cueTo(e.al - 0.01); run(0.08);                                         // auto-cue
   const rl = rec.rTab[rec.rTab.length - 1], [sx, sy] = stylusXY(alphaForRadius(rl));
@@ -36,10 +37,12 @@ function warmup(fs) {
   e.setMotor(false); e.setCue(true); run(0.05);
 }
 
+let warm = false;     // the second deck runs on the same audio thread, with the code already compiled: warming up again would stall the first deck's sound
+
 class Turntable extends AudioWorkletProcessor {
   constructor() {
     super();
-    try { warmup(sampleRate); } catch (err) { this.port.postMessage({ t: 'log', msg: 'warmup failed: ' + err }); }
+    if (!warm) { warm = true; try { warmup(sampleRate); } catch (err) { this.port.postMessage({ t: 'log', msg: 'warmup failed: ' + err }); } }
     this.e = new Engine(sampleRate);
     this.count = 0; this.view = false; this.tick = 0; this.busy = 0; this.frames = 0;
     this.now = globalThis.performance && performance.now ? () => performance.now() : () => Date.now();
@@ -60,10 +63,14 @@ class Turntable extends AudioWorkletProcessor {
       case 'platter': e.platterHand(m.on); break;
       case 'platterMove': e.platterMove(m.d); break;
       case 'bump': e.bump(m.s); break;
+      case 'jump': e.jump(m.theta, m.stop); break;
+      case 'loop': e.setLoop(m.a, m.b); break;
       case 'view': this.view = m.on; break;
+      case 'end': this.ended = true; break;
     }
   }
   process(inputs, outputs) {
+    if (this.ended) return false;
     const out = outputs[0], L = out[0], R = out[1] || this.scratch;
     const t0 = this.now();
     this.e.process(L, R, L.length);

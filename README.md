@@ -11,6 +11,7 @@ This is a _physical simulation_ of a record player's mechanics, which happen to 
 - **"Real", procedural flaws**: hiss and crackle are roughness and dust on the groove walls. A scratch ticks once per turn because the needle crosses it once per turn. Treble dulls toward the label because the groove moves slower there. Knock the table and it skips.
 - **Real physics, in real time**: a 2 DOF stylus tip on [Hertzian](https://en.wikipedia.org/wiki/Contact_mechanics#Hertzian_theory_of_non-adhesive_elastic_contact) wall contacts with friction, oversampled inside an `AudioWorklet`, with platter inertia, arm kinematics, [RIAA de-emphasis](https://en.wikipedia.org/wiki/RIAA_equalization) and three stylus shapes (conical, elliptical, micro-line).
 - **Bring your own audio**: _Cut a file_ runs the lathe on anything you drop in, in a worker, in the browser. _Press again_ makes a dirtier (or cleaner) copy of the same cut.
+- **DJ mode**: _Add deck_ puts a second turntable and a mixer next to the first, on one audio clock. Hot cues, beat loops, a jog wheel, tap tempo and sync, a two-channel mixer with EQ kills, filter, echo, crossfader and headphone cue, and recording of the mix to a file. Tempo is measured from the groove itself, so sync works on records you cut too.
 - **No dependencies, no bundler**: plain ES modules, WebGL2 and Web Audio. The build copies files.
 
 ## Running it
@@ -25,7 +26,7 @@ There's nothing to install. Node 22+ is enough for the build and the tests:
 
 ```bash
 $ npm run build   # dist/: index.html, src/, assets/, records/
-$ npm test        # offline checks of the physics: response, distortion, surface noise, cue, skip
+$ npm test        # offline checks of the physics (response, distortion, surface noise, cue, skip) and the DJ mixer
 $ npm run bench   # CPU cost of the engine per second of audio
 ```
 
@@ -38,6 +39,8 @@ $ npm run bench   # CPU cost of the engine per second of audio
 **3️⃣ Play.** The engine ([`src/engine.js`](src/engine.js), [`src/engine-core.js`](src/engine-core.js), [`src/groove.js`](src/groove.js)) rides the stylus over those walls. A tip of finite radius can't follow the wall exactly, and that's where tracing distortion, pinch effect and inner-groove loss come from. Too little tracking force and it leaves the wall.
 
 **4️⃣ Draw.** The deck ([`src/render.js`](src/render.js), [`src/shaders.js`](src/shaders.js)) draws the disc from the cut itself: the actual spiral, lit by how hard each revolution is modulated.
+
+**5️⃣ Mix.** With two decks, both engines play into the desk ([`src/desk-worklet.js`](src/desk-worklet.js)), a mixer on the audio thread: trim, a three-band isolator with kills, filter, echo, channel faders, a crossfader, a split headphone cue and a look-ahead limiter. Each track's tempo is read off the groove walls ([`src/tempo.js`](src/tempo.js)), and the engine can jump and loop between two points of the spiral without a click.
 
 ## Records
 

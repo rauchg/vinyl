@@ -1,13 +1,17 @@
 // One turntable and everything that belongs to it: the picture, the physics engine on the audio thread,
-// the panels and the readout. main.js puts it on the page.
+// the panels and the readout. main.js makes one for the page, and a second one for DJ mode.
 import { Renderer } from './render.js';
 import { TAU } from './dsp.js';
 import { RECORDS } from './records.js';
 import { press, makeVis } from './press.js';
 import { PIVOT_X, PIVOT_Y, ALPHA_REST, R_DISC, R_LABEL, R_LEADIN, W33, alphaForRadius } from './geometry.js';
+import { findTempo } from './tempo.js';
+import { audioContext } from './audio-context.js';
 
 const $ = (id) => document.getElementById(id);
 const AZ0 = -0.5, EL0 = 0.6;   // default camera
+const pro = () => document.documentElement.classList.contains('pro');   // a deck controller is out
+const HANDOVER = 0.008;     // s: how quickly a deck's sound crosses over between the speakers and the mixer
 const POWER_MSG = matchMedia('(pointer: coarse)').matches ? 'tap to power on' : 'click to power on';
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const decodeAudio = async (url, fs) => new OfflineAudioContext(2, 1, fs).decodeAudioData(await (await fetch(url)).arrayBuffer());   // for mastering here
@@ -40,18 +44,19 @@ function takeBoot(dir) {
   b.used = true; return b;
 }
 
-// suffix: what this turntable's element ids end in. say(name, message): the status line.
-// guard(name, fn): runs a part of the frame so that a failure cannot stop the loop.
-export function createTurntable({ suffix = '', name = 'A', og = false, say, guard }) {
-  const el = (id) => $(id + suffix), api = {};
+// suffix: what this deck's element ids end in. inDj(): are two decks out? say(name, message): the status line.
+// guard(name, fn): runs a part of the frame so that a failure cannot stop the loop. touched(deck): a hand went on this deck. onStart(): it has first been switched on.
+export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say, guard, touched, onStart }) {
+  const el = (id) => $(id + suffix), primary = !suffix, api = {};
   const canvas = el('gl'), renderer = new Renderer(canvas);
   let masterWorker = null;      // the lathe + pressing plant; only started if something has to be mastered in the browser
   const worker = { postMessage: (m, transfer) => { busy(); (masterWorker ||= startWorker()).postMessage(m, transfer || []); } };
   // The progress bar (index.html) shows window.__load: a download with got/total, or just "busy" when the size is unknown.
-  const busy = (h = { got: 0, total: 0 }) => (window.__load = h);
-  const idle = () => { if (window.__load) window.__load.done = true; };
-  const S = { hudOn: false, lastDown: 0, tel: null, tRecv: 0, zoom: 0, zoomT: 0, az: AZ0, el: EL0, rpm: 33.3333, rec: null, pending: null, motor: false, cue: true, ready: false };
-  let ctx = null, node = null, drag = null;
+  let loading = null;
+  const busy = (h = { got: 0, total: 0 }) => (loading = window.__load = h);
+  const idle = () => { if (loading) loading.done = true; };
+  const S = { hudOn: false, lastDown: 0, tel: null, tRecv: 0, zoom: 0, zoomT: 0, az: AZ0, el: EL0, rpm: 33.3333, pitch: 0, bend: 0, lock: 0, rec: null, pending: null, motor: false, cue: true, ready: false, pull: 1, shift: [0, 0] };
+  let ctx = null, node = null, direct = null, plugged = null, drag = null;
   let pick = 0;   // bumps each time a record is chosen, so an older, slower cut cannot land on top of a newer choice
   const send = (m, transfer) => { if (node) node.port.postMessage(m, transfer || []); };
   const status = (msg) => { S.msg = msg; say(name, msg); };   // empty when nothing is happening
@@ -76,9 +81,10 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     renderer.setRecord(rec, vis);
     idle();
     reveal();
+    guard('tempo', () => findTempo(rec));           // has to be now: the walls go to the audio thread next
     S.pending = rec; S.pendingPick = pick;          // gotRecord only ever runs for the current pick
     status(rec.truncated ? 'Programme was too long for one side and was cut short.' : '');
-    $('d-points').textContent = (rec.n / 1e6).toFixed(1) + ' million';
+    if (primary) $('d-points').textContent = (rec.n / 1e6).toFixed(1) + ' million';
     loadRecord();
   }
   function loadRecord() {
@@ -92,11 +98,15 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     S.loaded = true;
     if (S.started) play(); else start();
   }
-  const play = () => { setMotor(true); setTimeout(() => send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }), 400); };
+  // Alone, a record starts as soon as it is put on. With two decks it waits for its deck's Start, or it would play straight over the other one.
+  const play = () => {
+    if (inDj()) { S.fresh = true; setMotor(false); send({ t: 'cueTo', al: ALPHA_REST }); return; }
+    setMotor(true); setTimeout(() => send({ t: 'cueTo', al: alphaForRadius(R_LEADIN - 0.0012) }), 400);
+  };
   // Nothing moves until all three are true: the user powered on, the engine is warm, and a record is in it.
   function start() {
     if (!S.on || !S.ready || !S.loaded || S.started) return;
-    S.started = true; $('power')?.remove(); play();
+    S.started = true; $('power')?.remove(); onStart?.(); play();
   }
   async function loadPrecompiled(dir = 'assets/', me = pick, pressing = null) {     // dir: assets/ (house record) or assets/<id>/ (a shelf record)
     let h = takeBoot(dir) || fetchRecord(dir), man = await h.man;
@@ -138,22 +148,26 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
   // ---------- audio ----------
   // The engine is created (and its JIT warm-up runs) as soon as the page loads. The context just stays
   // suspended until the first click, so "power on" is normally instant.
-  let audioInit = null;
+  // Both decks share one context: one clock, so they can be mixed and do not drift apart.
+  let audioInit = null, gone = false;   // gone: the deck was taken away (see destroy)
   function initAudio() {
     return audioInit ||= (async () => {
-      ctx = new AudioContext({ latencyHint: 'interactive' });
+      ctx = audioContext();
       await ctx.audioWorklet.addModule(new URL('./worklet.js', import.meta.url));
+      if (gone) return;                                  // the deck was taken away while the module loaded
       node = new AudioWorkletNode(ctx, 'turntable', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
       node.port.onmessage = ({ data: m }) => {
         if (m.t === 'tel') { S.tel = m; S.tRecv = performance.now(); if (m.view) S.view = m.view; S.cue = m.cueUp; }
         else if (m.t === 'ready') {
-          S.ready = true; pushParams(); send({ t: 'view', on: true }); loadRecord(); start();
-          $('d-rate').textContent = (m.os * m.fs).toLocaleString('en-US');
+          S.ready = true; pushParams(); if (S.pitch) sendSpeed(); send({ t: 'view', on: true }); loadRecord(); start();
+          if (primary) $('d-rate').textContent = (m.os * m.fs).toLocaleString('en-US');
         } else if (m.t === 'log') console.warn(m.msg);
       };
-      node.connect(ctx.destination);
-      if (!S.on && ctx.state === 'running') await ctx.suspend();   // some browsers start it unasked; stay silent until power-on
-    })().catch((err) => { audioInit = null; ctx = null; node = null; throw err; });
+      direct = new GainNode(ctx, { gain: plugged ? 0 : 1 });       // one deck goes straight to the speakers, untouched; two go through the mixer
+      node.connect(direct).connect(ctx.destination);
+      if (plugged) node.connect(plugged.target, 0, plugged.input);
+      if (!S.on && primary && ctx.state === 'running') await ctx.suspend();   // some browsers start it unasked; stay silent until power-on
+    })().catch((err) => { audioInit = null; ctx = null; node = null; direct = null; throw err; });
   }
   async function powerOn() {
     if (S.on) return;
@@ -178,15 +192,25 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     const msg = $('power-msg');
     if (msg && S.on && !S.started) msg.textContent = (S.msg || '').replace(/\.+$/, '') || (S.loaded ? (S.ready ? 'starting' : 'warming up') : 'loading the record');
   }
-  $('power').addEventListener('click', powerOn);       // the pill; a tap on the scene powers on too (see the pointer handlers)
-  $('power-msg').textContent = POWER_MSG;
-  if (!og) initAudio().catch(() => {});                // best effort before any gesture; the click retries if the browser refused
+  if (primary) {
+    $('power').addEventListener('click', powerOn);       // the pill; a tap on the scene powers on too (see the pointer handlers)
+    $('power-msg').textContent = POWER_MSG;
+    if (!og) initAudio().catch(() => {});                // best effort before any gesture; the click retries if the browser refused
+  }
+  // A deck added later: the click that added it is the gesture that lets its audio start.
+  function powerUp() {
+    S.on = true;
+    initAudio().catch((err) => { console.error(err); status('audio failed: ' + err.message); });
+    ctx?.resume().catch(() => {});
+  }
 
   // ---------- controls ----------
-  function setMotor(on) { S.motor = on; send({ t: 'motor', on }); el('b-start').textContent = on ? 'Stop' : 'Start'; el('b-start').classList.toggle('on', on); }
+  function showMotor(on) { S.motor = on; el('b-start').textContent = on ? 'Stop' : 'Start'; el('b-start').classList.toggle('on', on); }
+  function setMotor(on) { showMotor(on); send({ t: 'motor', on }); }
+  const sendSpeed = () => send({ t: 'speed', rpm: S.rpm * (1 + S.pitch + S.bend + S.lock) });
   function pushParams() {
     // 100% on the slider is 2 dB under unity: the cartridge lifts the treble by up to 1.9 dB, and bright peaks would clip
-    send({ t: 'set', volume: 0.8 * +el('p-volume').value, stylus: el('p-stylus').value, vtf: +el('p-vtf').value, antiskate: +el('p-antiskate').value, hum: +el('p-hum').value });
+    send({ t: 'set', volume: 0.8 * +el('p-volume').value, stylus: el('p-stylus').value, vtf: +el('p-vtf').value, antiskate: +el('p-antiskate').value, hum: +el('p-hum').value, dj: pro() });
   }
   for (const input of el('ctl').querySelectorAll('input[type=range]')) {
     const out = input.parentElement.querySelector('output'), show = () => { out.textContent = input.id === 'p-volume' + suffix ? Math.round(input.value * 100) + '%' : (+input.value).toFixed(2); };
@@ -198,12 +222,13 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
   });
   toggle('t-ctl', 'ctl', (open) => { if (open && !el('shelf').hidden) el('t-records').click(); });      // one panel in that corner at a time
   toggle('t-records', 'shelf', (open) => { if (open && !el('ctl').hidden) el('t-ctl').click(); });
+  const openShelf = () => { if (el('shelf').hidden) el('t-records').click(); };
   el('b-start').addEventListener('click', () => setMotor(!S.motor));
   el('b-cue').addEventListener('click', () => send({ t: 'cue', up: !S.cue }));
   el('b-bump').addEventListener('click', () => send({ t: 'bump', s: 1 }));
   el('b-press').addEventListener('click', pressAgain);
   const speeds = el('ctl').querySelectorAll('[data-rpm]');
-  for (const b of speeds) b.addEventListener('click', () => { speeds.forEach((x) => x.classList.toggle('on', x === b)); S.rpm = +b.dataset.rpm; send({ t: 'speed', rpm: S.rpm }); });
+  for (const b of speeds) b.addEventListener('click', () => { speeds.forEach((x) => x.classList.toggle('on', x === b)); S.rpm = +b.dataset.rpm; sendSpeed(); });
   async function cutFiles(files) {
     const list = [...files].filter((f) => f.type.startsWith('audio/') || /\.(mp3|wav|flac|m4a|ogg|aiff?)$/i.test(f.name));
     if (!list.length) return;
@@ -221,8 +246,46 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     worker.postMessage({ t: 'tracks', tracks, fs: 48000, cond: condition() }, transfer);
   }
 
+  // ---------- what the mixer and the deck controller drive ----------
+  const tracks = () => S.rec?.tracks || [];
+  // Start with one press: from the top of a record that has just been put on, or from where the needle is.
+  function transport() {
+    if (!S.loaded) return openShelf();
+    if (S.motor) return setMotor(false);
+    if (S.fresh) return startAt(tracks()[0].theta0);
+    setMotor(true);
+    if (S.cue) send({ t: 'cue', up: false });
+  }
+  // The needle goes straight down at this place in the groove. stop: the record waits there.
+  function jumpTo(theta, stop = false) {
+    S.fresh = false;
+    send({ t: 'jump', theta, stop });
+    if (stop) setMotor(false);                 // said on its own as well: the engine skips the jump while a hand is on the arm
+  }
+  function startAt(theta) { jumpTo(theta); if (!S.motor) setMotor(true); }
+  // Where the needle is in the groove (radians along it), or null when it is not over the music.
+  function position() {
+    const t = S.tel;
+    if (!S.rec || !t || t.recSeq !== S.rec.seq || !(Math.abs(t.xg) < 1e-3)) return null;
+    return t.theta + t.wp * Math.min(0.1, (performance.now() - S.tRecv) / 1000);
+  }
+  const setLoop = (a, b) => send({ t: 'loop', a, b });
+  // Into the mixer (target: its node, input: which channel), or back straight to the speakers (null). Both paths are open for a moment, so there is no click.
+  function plugInto(target, input = 0) {
+    const was = plugged;
+    plugged = target ? { target, input } : null;
+    if (!node) return;
+    if (target) node.connect(target, 0, input);
+    direct.gain.setTargetAtTime(target ? 0 : 1, ctx.currentTime, HANDOVER);
+    if (was) setTimeout(() => { try { node.disconnect(was.target, 0, was.input); } catch {} }, 80);
+  }
+  function setPitch(fraction) { S.pitch = fraction; sendSpeed(); }
+  function setBend(fraction) { S.bend = fraction; sendSpeed(); }
+  function setLock(fraction) { if (fraction !== S.lock) { S.lock = fraction; sendSpeed(); } }   // Sync's small corrections, kept apart from what a hand does
+
   // ---------- record shelf: free-to-ship recordings (src/records.js, audio in records/), precompiled into assets/<id>/ ----------
   const shelf = el('shelf'), credit = shelf.appendChild(document.createElement('p'));
+  el('now-tag').textContent = name;
   // The Records toggle shows what is on the platter: the record, or while a track plays its title and time.
   function nowPlaying(title, time = '', playing = false) {
     if (title === S.nowTitle && time === S.nowTime && playing === S.nowPlaying) return;
@@ -272,12 +335,13 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     b.addEventListener('click', () => { pickRecord(r); b.blur(); });
     shelf.insertBefore(b, credit);
   }
-  pickRecord(RECORDS.find((r) => r.id === (window.__boot?.id || 'rhapsody')) || RECORDS[0]);   // the record on the platter when the page opens
+  if (primary) pickRecord(RECORDS.find((r) => r.id === (window.__boot?.id || 'rhapsody')) || RECORDS[0]);   // the record on the platter when the page opens
+  else { reveal(); nowPlaying('Choose music'); }
   el('f-audio').addEventListener('change', (e) => cutFiles(e.target.files));
 
-  // ---------- keyboard ----------
+  // ---------- keyboard: the deck that was last touched ----------
   function onKey(e) {
-    if (e.code === 'Space') { e.preventDefault(); setMotor(!S.motor); }
+    if (e.code === 'Space') { e.preventDefault(); if (inDj()) transport(); else setMotor(!S.motor); }
     else if (e.key === 'c') send({ t: 'cue', up: !S.cue });
     else if (e.key === 'b') send({ t: 'bump', s: 1 });
     else if (e.key === 'z') S.zoomT = S.zoomT > 0.5 ? 0 : 0.92;
@@ -288,6 +352,7 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
   const curAl = () => (S.tel ? S.tel.al : ALPHA_REST);
   const touches = new Map();   // active pointers, for two-finger pinch zoom
   canvas.addEventListener('pointerdown', (e) => {
+    touched(api);
     try { canvas.setPointerCapture(e.pointerId); } catch {}
     touches.set(e.pointerId, [e.clientX, e.clientY]);
     if (touches.size === 2) {                     // a second finger: stop what the first was doing and pinch
@@ -302,9 +367,11 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     const plain = S.started && S.ready && e.button === 0 && !e.shiftKey && !e.altKey;
     if (plain && pa && renderer.armDistance(pa, curAl()) < (e.pointerType === 'touch' ? 0.03 : 0.011)) {
       drag = { type: 'arm', off: curAl() - armAngle(pa) };
+      S.fresh = false;                            // the needle goes where the hand puts it
       send({ t: 'hand', on: true, al: curAl() });
     } else if (plain && p && Math.hypot(p[0], p[1]) < R_DISC) {
       drag = { type: 'platter', ang: Math.atan2(p[1], p[0]), moved: 0, t0: performance.now(), p };
+      S.grabbed = true;
       send({ t: 'platter', on: true });
     } else drag = { type: 'orbit', x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, tap: !S.on && e.button === 0 };   // anywhere else: turn the camera
     canvas.style.cursor = 'grabbing';
@@ -336,8 +403,9 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     else if (drag.type === 'orbit' && drag.tap) S.tapped = performance.now();   // powers on in the click / touchend that follows
     else if (drag.type === 'platter') {
       send({ t: 'platter', on: false });
+      S.grabbed = false;
       const r = Math.hypot(drag.p[0], drag.p[1]);
-      if (drag.moved < 0.003 && performance.now() - drag.t0 < 400 && r > R_LABEL + 0.002) send({ t: 'cueTo', al: alphaForRadius(r) });
+      if (drag.moved < 0.003 && performance.now() - drag.t0 < 400 && r > R_LABEL + 0.002) { S.fresh = false; send({ t: 'cueTo', al: alphaForRadius(r) }); }
     }
     drag = null; canvas.style.cursor = 'grab';
   };
@@ -345,7 +413,7 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
   // A tap on the scene powers on. It has to happen in `touchend` or `click`: iOS Safari does not accept
   // `pointerup` as a gesture that may start audio, and the context would stay suspended forever.
   for (const type of ['touchend', 'click']) canvas.addEventListener(type, () => {
-    if (!S.on && S.tapped && performance.now() - S.tapped < 800 && document.documentElement.classList.contains('ready')) { S.tapped = 0; powerOn(); }
+    if (primary && !S.on && S.tapped && performance.now() - S.tapped < 800 && document.documentElement.classList.contains('ready')) { S.tapped = 0; powerOn(); }
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('wheel', (e) => { e.preventDefault(); S.zoomT = Math.max(-0.8, Math.min(0.985, S.zoomT - e.deltaY * (e.ctrlKey ? 0.01 : 0.0015))); }, { passive: false });
@@ -393,6 +461,7 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     if (down) S.lastDown = clock;
     const show = down || (S.lastDown > 0 && clock - S.lastDown < 3000);
     if (show !== S.hudOn) { S.hudOn = show; el('hud').classList.toggle('on', show); }
+    if (!S.loaded && !S.pending && !S.rec) return;   // a deck with nothing on it yet keeps saying so
     // in a track: its title and time, bars moving while the record turns; anywhere else: the record's name
     // only while the platter holds the record that was picked last: switching shows the new name straight away,
     // and never a track of the previous record while the new one loads
@@ -407,6 +476,25 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
 
   // ---------- frame loop ----------
   let frame = 0;
+  // The parts of the window where nothing covers the deck: above the readout, or to its right.
+  function freeBoxes() {
+    const m = 16, covers = (ids) => ids.map((id) => $(id).getBoundingClientRect()).filter((r) => r.width);
+    if (inDj()) {            // this deck's own part of the window, above the controllers, the mixer and the readout
+      const c = canvas.getBoundingClientRect(), under = covers(['console', 'hud' + suffix]);
+      return [{ left: c.left + m, right: c.right - m, top: Math.max(c.top, el('toggles').getBoundingClientRect().bottom + 6), bottom: Math.min(c.bottom, ...under.map((r) => r.top)) - 8 }];
+    }
+    const top = innerWidth > 640 ? 44 : Math.max($('teaser').getBoundingClientRect().bottom, el('toggles').getBoundingClientRect().bottom) + 8, rects = covers(['hud' + suffix, ...(pro() ? ['dx-a'] : [])]);
+    return [
+      { left: m, right: innerWidth - m, top, bottom: Math.min(...rects.map((r) => r.top)) - 8 },
+      { left: Math.max(...rects.map((r) => r.right)) + 8, right: innerWidth - m, top, bottom: innerHeight - 40 },     // clear of the credits on the bottom row
+    ];
+  }
+  function frameDeck() {
+    const dj = inDj(), key = pro() ? `${canvas.width}x${canvas.height}${dj ? ' dj' : ''}` : '';   // the canvas, not the window: it takes its new size in draw, and the camera reads its shape from there
+    if (key !== S.frameKey) { S.frameKey = key; S.frameT = key ? renderer.fit({ az: AZ0, el: EL0, al: ALPHA_REST }, freeBoxes()) : { pull: 1, shift: [0, 0] }; }
+    S.pull += (S.frameT.pull - S.pull) * 0.12;
+    S.shift = S.shift.map((x, i) => x + (S.frameT.shift[i] - x) * 0.12);
+  }
   function tick() {
     const t = S.tel, dt = t ? Math.min(0.1, (performance.now() - S.tRecv) / 1000) : 0;
     S.zoom += (S.zoomT - S.zoom) * 0.12;
@@ -418,7 +506,11 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     S.moved = Math.abs(S.zoomT) > 0.01 || Math.abs(S.az - AZ0) > 0.01 || Math.abs(S.el - EL0) > 0.01;
     guard('render', () => {
       if (og) renderer.draw({ thp: 2.2, al: alphaForRadius(0.108), zt: 0, zoom: 0, az: -0.5, el: 0.6, motor: true, rpm: 33.3333, bare: true, dist: 1.1, at: [0.021, -0.07, -0.093], ...window.__og });   // deck high in the frame: X overlays the bottom
-      else renderer.draw({ thp: t ? t.thp + t.wp * dt : 0, al: t ? t.al : ALPHA_REST, zt: t ? t.zb + t.ze : 5e-3, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm });
+      else {
+        const pose = S.pose = { thp: t ? t.thp + t.wp * dt : 0, al: t ? t.al : ALPHA_REST, zt: t ? t.zb + t.ze : 5e-3 };
+        frameDeck();
+        renderer.draw({ ...pose, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm, pull: S.pull, shift: S.shift });
+      }
     });
     if (frame++ % 2 === 0 && S.hudOn) guard('groove view', drawScope);
     if (frame % 6 === 0) guard('readout', drawStats);
@@ -427,11 +519,25 @@ export function createTurntable({ suffix = '', name = 'A', og = false, say, guar
     S.zoomT = 0; S.resetting = true;
     S.az = AZ0 + ((((S.az - AZ0 + Math.PI) % TAU) + TAU) % TAU) - Math.PI;   // unwind full turns first
   }
+  // Everything this deck holds on to, for when it is taken away again.
+  function destroy() {
+    gone = true; pick++; idle();
+    masterWorker?.terminate();
+    node?.port.postMessage({ t: 'end' }); node?.disconnect(); direct?.disconnect();   // the context stays: the other deck is using it
+    renderer.gl.getExtension('WEBGL_lose_context')?.loseContext();
+  }
 
   return Object.defineProperties(api, Object.getOwnPropertyDescriptors({   // not Object.assign: that would freeze the getters at their first value
-    name, canvas, S, renderer, send, tick, resetView, cutFiles, onKey,
+    name, canvas, S, say: (msg) => say(`${name} sync`, msg), renderer, send, tick, resetView, cutFiles, onKey, openShelf, powerUp, destroy, pushParams,
+    transport, jumpTo, startAt, position, setLoop, plugInto, setPitch, setBend, setLock,
+    get tracks() { return tracks(); },
+    get tempoRatio() { return S.rpm * (1 + S.pitch) / 33.3333; },   // how fast the music runs, against how it was cut
+    get pick() { return pick; },       // changes when another record is chosen
+    get loaded() { return !!S.loaded; },
+    get fresh() { return !!S.fresh; },
     get ctx() { return ctx; },
     get moved() { return S.moved; },
+    get motor() { return S.motor; },
     panels: [[el('ctl'), el('t-ctl')], [el('shelf'), el('t-records')]],
   }));
 }

@@ -10,6 +10,9 @@ import {
 
 const PIVOT_H = 0.030, DECK_Z = -0.022, FLOOR_Z = -0.080, FOV = 30 * Math.PI / 180, SHADOW = 2048;
 const CB = Math.cos(ARM_BETA), SB = Math.sin(ARM_BETA), lerp = (a, b, t) => a + (b - a) * t;
+// what has to stay in view when the deck is framed around something else on the page: the plinth, its feet, the arm's counterweight
+const DECK_POINTS = [-0.185, 0.27].flatMap((x) => [-0.19, 0.19].flatMap((y) => [-0.03, FLOOR_Z].map((z) => [x, y, z])))
+  .concat([[PIVOT_X - 0.06 * Math.cos(ALPHA_REST), PIVOT_Y - 0.06 * Math.sin(ALPHA_REST), 0.065]]);
 // arm tube: a J-shaped bend from the pivot to the headshell collar, in the arm frame (+x = pivot -> stylus)
 const P3 = [ARM_LE - 0.040 * CB, 0.040 * SB, -0.0125];
 const TUBE = G.bezier([0, 0, 0], [0.075 * Math.cos(0.28), 0.075 * Math.sin(0.28), -0.003], [P3[0] - 0.075 * CB, P3[1] + 0.075 * SB, -0.0085], P3, 32);
@@ -112,22 +115,51 @@ export class Renderer {
     this.setLabel(rec.tracks.map((t) => t.title || 'Untitled'));
   }
 
-  // orbit camera: st.az (around the deck), st.el (elevation), st.zoom (0 = whole deck, 1 = at the stylus, < 0 = further away)
+  // orbit camera: st.az (around the deck), st.el (elevation), st.zoom (0 = whole deck, 1 = at the stylus, < 0 = further away),
+  // st.pull (how much further back the whole-deck view stands), st.shift ([x, y] the picture slides by, in clip space)
   camera(st) {
-    const c = this.canvas, asp = c.width / c.height, z = st.zoom, zi = Math.max(0, z), [sx, sy] = stylusXY(st.al);
-    const at = st.at || [lerp(0.042, sx, zi), lerp(0, sy, zi), lerp(-0.015, 0, zi)], base = Math.max(0.95, 0.95 * 1.5 / asp);
+    const c = this.canvas, asp = c.width / c.height, z = st.zoom, zi = Math.max(0, z), [sx, sy] = stylusXY(st.al), shift = st.shift || [0, 0];
+    const at = st.at || [lerp(0.042, sx, zi), lerp(0, sy, zi), lerp(-0.015, 0, zi)], base = Math.max(0.95, 0.95 * 1.5 / asp) * (st.pull || 1);
     const dist = st.dist || (z >= 0 ? lerp(base, 0.06, z) : base * Math.exp(-0.9 * z)), ce = Math.cos(st.el);   // z < 0 pulls back
     const eye = [at[0] + dist * ce * Math.sin(st.az), at[1] - dist * ce * Math.cos(st.az), at[2] + dist * Math.sin(st.el)];
-    const v = G.lookAt(eye, at);
-    this.cam = { eye, asp, ...v, vp: G.mul(G.perspective(FOV, asp, lerp(0.05, 0.004, zi), 150), v.m) };
+    const v = G.lookAt(eye, at), proj = G.perspective(FOV, asp, lerp(0.05, 0.004, zi), 150);
+    proj[8] = -shift[0]; proj[9] = -shift[1];
+    this.cam = { eye, asp, shift, ...v, vp: G.mul(proj, v.m) };
     return this.cam;
+  }
+
+  // how far the deck reaches on screen from this camera, in clip space
+  extent(st) {
+    const { vp } = this.camera(st), e = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
+    for (const [x, y, z] of DECK_POINTS) {
+      const w = vp[3] * x + vp[7] * y + vp[11] * z + vp[15], px = (vp[0] * x + vp[4] * y + vp[8] * z + vp[12]) / w, py = (vp[1] * x + vp[5] * y + vp[9] * z + vp[13]) / w;
+      e.x0 = Math.min(e.x0, px); e.x1 = Math.max(e.x1, px); e.y0 = Math.min(e.y0, py); e.y1 = Math.max(e.y1, py);
+    }
+    return e;
+  }
+  // The { pull, shift } that puts the whole deck inside one of `boxes` ({ left, right, top, bottom } in CSS pixels), whichever leaves it largest.
+  fit(st, boxes) {
+    const b = this.canvas.getBoundingClientRect();
+    let best = null;
+    for (const box of boxes) {
+      const x0 = (box.left - b.left) / b.width * 2 - 1, x1 = (box.right - b.left) / b.width * 2 - 1, y0 = 1 - (box.bottom - b.top) / b.height * 2, y1 = 1 - (box.top - b.top) / b.height * 2;
+      if (x1 <= x0 || y1 <= y0) continue;
+      const view = { ...st, zoom: 0, pull: 1, shift: [0, 0] };
+      for (let i = 0; i < 4; i++) {        // the picture does not shrink quite in proportion: perspective changes with distance
+        const e = this.extent(view);
+        view.pull = Math.max(1, view.pull * Math.max((e.x1 - e.x0) / (x1 - x0), (e.y1 - e.y0) / (y1 - y0)));
+      }
+      const e = this.extent(view);
+      if (!best || view.pull < best.pull) best = { pull: view.pull, shift: [(x0 + x1 - e.x0 - e.x1) / 2, (y0 + y1 - e.y0 - e.y1) / 2] };
+    }
+    return best || { pull: 1, shift: [0, 0] };
   }
 
   // world (x, y) on the horizontal plane at height z under a pointer position
   pick(clientX, clientY, z = 0) {
     const cam = this.cam; if (!cam) return null;
     const b = this.canvas.getBoundingClientRect(), t = Math.tan(FOV / 2);
-    const nx = ((clientX - b.left) / b.width * 2 - 1) * t * cam.asp, ny = (1 - (clientY - b.top) / b.height * 2) * t;
+    const nx = ((clientX - b.left) / b.width * 2 - 1 - cam.shift[0]) * t * cam.asp, ny = (1 - (clientY - b.top) / b.height * 2 - cam.shift[1]) * t;
     const d = [0, 1, 2].map((i) => cam.fwd[i] + nx * cam.right[i] + ny * cam.up[i]);
     if (d[2] >= -1e-6) return null;
     const k = (z - cam.eye[2]) / d[2];

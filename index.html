@@ -58,7 +58,7 @@
 <link rel="modulepreload" href="src/records.js"><link rel="modulepreload" href="src/label.js"><link rel="modulepreload" href="src/press.js">
 <link rel="modulepreload" href="src/worklet.js"><link rel="modulepreload" href="src/engine.js"><link rel="modulepreload" href="src/engine-core.js"><link rel="modulepreload" href="src/groove.js">
 <link rel="modulepreload" href="src/turntable.js"><link rel="modulepreload" href="src/audio-context.js"><link rel="modulepreload" href="src/tempo.js">
-<link rel="modulepreload" href="src/mixer.js"><link rel="modulepreload" href="src/desk.js"><link rel="modulepreload" href="src/controller.js">
+<link rel="modulepreload" href="src/mixer.js"><link rel="modulepreload" href="src/desk.js"><link rel="modulepreload" href="src/controller.js"><link rel="modulepreload" href="src/booth.js">
 <style>
   :root { --fg: #e8e4dd; --soft: #c4c0b9; --dim: #85817a; --line: rgba(255,255,255,.1); --panel: rgba(12,12,13,.78); --acc: #ffb454; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
   * { box-sizing: border-box; }
@@ -162,6 +162,7 @@
   #gl-b { left: 50%; left: round(down, 50%, 1px); width: 50%; width: calc(100% - round(down, 50%, 1px)); }
   .dj #vig { background: radial-gradient(ellipse at 50% 46%, transparent 42%, rgba(0,0,0,.6) 100%); }
   .dj #vig::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent calc(50% - 56px), #030304 50%, transparent calc(50% + 56px)); transition: opacity .25s; }   /* a deck in close-up is lit on its own: a shadow hides where the two pictures meet */
+  .booth:not(.zoomed) #vig::after { opacity: 0; }                         /* one picture across the window: nothing to hide */
   .dj .toggles { max-width: calc(50% - 20px); }
   .dj #toggles { right: auto; left: 14px; }
   .dj .toggles .t-records { flex: 0 1 auto; min-width: 0; max-width: none; }
@@ -253,6 +254,7 @@
     .dj .dx { grid-template: "read read read" 18px "trans jog fader" var(--jog) "side side side" minmax(0, 1fr) / 56px minmax(0, 1fr) 20px; }
     .dj .dx-jog { display: block; justify-self: center; }
   }
+  @media (min-width: 1000px) { .booth #mixer:not(:focus-within) { position: absolute; width: 1px; height: 1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); } }   /* the mixer is in the picture; these sliders stay for the keyboard */
   @media (max-width: 900px) { #teaser { max-width: 210px; } }
   @media (max-width: 640px) {                      /* phones: track line on its own row above the credits */
     #teaser { max-width: calc(100% - 36px); top: calc(14px + env(safe-area-inset-top)); }

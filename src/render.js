@@ -4,6 +4,7 @@ import * as G from './gl-util.js';
 import { STD_VS, STD_FS, REC_VS, REC_FS, DEPTH_FS, KEY } from './shaders.js';
 import { TAU } from './dsp.js';
 import { drawLabel } from './label.js';
+import { boothParts, boothItems } from './booth.js';
 import {
   ARM_LE, ARM_BETA, PIVOT_X, PIVOT_Y, ALPHA_REST, R_DISC, R_LOCK, R_LEADIN, GROOVE_W, thetaForRadius, stylusXY,
 } from './geometry.js';
@@ -19,6 +20,8 @@ const TUBE = G.bezier([0, 0, 0], [0.075 * Math.cos(0.28), 0.075 * Math.sin(0.28)
 const REST_PT = TUBE[20];
 const STROBE = [-0.158, -0.160], LAMP = [STROBE[0] + 0.7026 * 0.024, STROBE[1] + 0.7115 * 0.024, -0.013];
 const BLACK = [0.012, 0.012, 0.013], CHROME = [0.62, 0.63, 0.66], AMBER = [1.0, 0.55, 0.12];
+const HOME = [0.042, 0, -0.015];   // what the camera looks at when it shows the whole deck
+const POOL = [0.04, 0, 0.95, 0.20];   // the key light's pool on a deck by itself: centre, where it ends, where it is full
 
 export class Renderer {
   constructor(canvas) {
@@ -118,8 +121,9 @@ export class Renderer {
   // orbit camera: st.az (around the deck), st.el (elevation), st.zoom (0 = whole deck, 1 = at the stylus, < 0 = further away),
   // st.pull (how much further back the whole-deck view stands), st.shift ([x, y] the picture slides by, in clip space)
   camera(st) {
-    const c = this.canvas, asp = c.width / c.height, z = st.zoom, zi = Math.max(0, z), [sx, sy] = stylusXY(st.al), shift = st.shift || [0, 0];
-    const at = st.at || [lerp(0.042, sx, zi), lerp(0, sy, zi), lerp(-0.015, 0, zi)], base = Math.max(0.95, 0.95 * 1.5 / asp) * (st.pull || 1);
+    const c = this.canvas, asp = c.width / c.height, z = st.zoom, zi = Math.max(0, z), [sx, sy] = stylusXY(st.al), home = st.home || HOME;
+    const shift = (st.shift || [0, 0]).map((v) => (st.home ? v * (1 - zi) : v));   // a close-up in the booth is this deck's alone, centred in its own canvas
+    const at = st.at || [lerp(home[0], sx, zi), lerp(home[1], sy, zi), lerp(home[2], 0, zi)], base = (st.base ?? Math.max(0.95, 0.95 * 1.5 / asp)) * (st.pull || 1);
     const dist = st.dist || (z >= 0 ? lerp(base, 0.06, z) : base * Math.exp(-0.9 * z)), ce = Math.cos(st.el);   // z < 0 pulls back
     const eye = [at[0] + dist * ce * Math.sin(st.az), at[1] - dist * ce * Math.cos(st.az), at[2] + dist * Math.sin(st.el)];
     const v = G.lookAt(eye, at), proj = G.perspective(FOV, asp, lerp(0.05, 0.004, zi), 150);
@@ -131,7 +135,7 @@ export class Renderer {
   // how far the deck reaches on screen from this camera, in clip space
   extent(st) {
     const { vp } = this.camera(st), e = { x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity };
-    for (const [x, y, z] of DECK_POINTS) {
+    for (const [x, y, z] of st.points || DECK_POINTS) {
       const w = vp[3] * x + vp[7] * y + vp[11] * z + vp[15], px = (vp[0] * x + vp[4] * y + vp[8] * z + vp[12]) / w, py = (vp[1] * x + vp[5] * y + vp[9] * z + vp[13]) / w;
       e.x0 = Math.min(e.x0, px); e.x1 = Math.max(e.x1, px); e.y0 = Math.min(e.y0, py); e.y1 = Math.max(e.y1, py);
     }
@@ -177,12 +181,16 @@ export class Renderer {
     return best;
   }
 
-  // st: { thp, al, zt (stylus height above the disc), zoom, az, el, motor, rpm }
-  draw(st) {
-    const gl = this.gl, c = this.canvas, m = this.m, I = G.ident(), info = this.info, ecc = info ? info.ecc : [0, 0];
-    const dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
+  resize() {
+    const c = this.canvas, dpr = Math.min(2, window.devicePixelRatio || 1), w = Math.round(c.clientWidth * dpr), h = Math.round(c.clientHeight * dpr);
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-    const cam = this.camera(st);
+    return [w, h];
+  }
+
+  // st: { thp, al, zt (stylus height above the disc), zoom, az, el, motor, rpm, booth (see Booth.view) }
+  draw(st) {
+    const gl = this.gl, m = this.m, I = G.ident(), info = this.info, ecc = info ? info.ecc : [0, 0];
+    const [w, h] = this.resize(), cam = this.camera(st), v = st.booth, b = v && (this.booth ||= boothParts(gl));
     const spin = G.Rz(-st.thp), discM = G.chain(spin, G.T(ecc[0], ecc[1], 0));
     const arm = G.chain(G.T(PIVOT_X, PIVOT_Y, PIVOT_H), G.Rz(st.al), G.Ry(-Math.asin(Math.max(-0.2, Math.min(0.2, st.zt / ARM_LE)))));
     const head = G.chain(arm, G.T(ARM_LE, 0, 0), G.Rz(-ARM_BETA));
@@ -220,12 +228,14 @@ export class Renderer {
     const common = (u) => {
       gl.uniformMatrix4fv(u.uVP, false, cam.vp); gl.uniformMatrix4fv(u.uLVP, false, this.lvp); gl.uniform3fv(u.uEye, cam.eye);
       gl.uniform1i(u.uShadow, 3); gl.uniform4f(u.uLamp, LAMP[0], LAMP[1], LAMP[2], on);
+      gl.uniform4fv(u.uPool, v ? v.pool : POOL); gl.uniform1f(u.uBooth, v ? 1 : 0);
     };
     let u = this.std.u;
-    gl.useProgram(this.std.p); common(u); gl.uniform2f(u.uPivot, PIVOT_X, PIVOT_Y);
-    for (const [mesh, M, col, rough, metal, mode, emis] of st.bare ? items.slice(1) : items) {      // bare: no table under the deck
+    gl.useProgram(this.std.p); common(u); gl.uniform2f(u.uPivot, PIVOT_X, PIVOT_Y); gl.uniform1i(u.uFace, 4);
+    if (b) { gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, b.tex); }
+    for (const [mesh, M, col, rough, metal, mode, emis, level = 0] of st.bare ? items.slice(1) : b ? items.concat(boothItems(b, v)) : items) {      // bare: no table under the deck
       gl.uniformMatrix4fv(u.uM, false, M); gl.uniform3fv(u.uCol, col); gl.uniform3fv(u.uEmis, emis);
-      gl.uniform1f(u.uRough, rough); gl.uniform1f(u.uMetal, metal); gl.uniform1i(u.uMode, mode);
+      gl.uniform1f(u.uRough, rough); gl.uniform1f(u.uMetal, metal); gl.uniform1i(u.uMode, mode); gl.uniform1f(u.uLevel, level);
       gl.bindVertexArray(mesh.vao); gl.drawArrays(gl.TRIANGLES, 0, mesh.count);
     }
     if (!info) return;

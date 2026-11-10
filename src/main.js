@@ -2,6 +2,7 @@
 import { createTurntable } from './turntable.js';
 import { Mixer } from './mixer.js';
 import { Controller } from './controller.js';
+import { Booth } from './booth.js';
 import { stylusXY } from './geometry.js';
 
 const $ = (id) => document.getElementById(id), root = document.documentElement;
@@ -40,7 +41,8 @@ addEventListener('error', (e) => { if (!seen.size) { seen.add('page'); say('page
 
 let focused = null;   // the deck the keyboard works on: the one last touched
 const touched = (deck) => { focused = deck; };
-const makeDeck = (opts) => createTurntable({ og: OG, inDj, say, guard, touched, ...opts });
+const booth = new Booth();
+const makeDeck = (opts) => createTurntable({ og: OG, inDj, say, guard, touched, booth, ...opts });
 const A = focused = makeDeck({ onStart: () => { $('t-deck').hidden = $('t-pro').hidden = false; } });
 const decks = [A], mixer = new Mixer($('mixer'), say);
 
@@ -74,7 +76,7 @@ function addDeck() {
   for (const part of PARTS) copyPart(part, '-b');
   $('t-deck-b').remove();
   $('t-pro-b').remove();
-  const B = makeDeck({ suffix: '-b', name: 'B' });
+  const B = makeDeck({ suffix: '-b', name: 'B', index: 1 });
   decks.push(B);
   B.powerUp();
   controllers.push(new Controller(panels[1], B, { onName: nextFront }));
@@ -114,7 +116,7 @@ addEventListener('pointerdown', (e) => {
   if (closed && e.target.classList?.contains('deck-gl')) e.stopPropagation();
 }, true);
 addEventListener('keydown', (e) => { if (e.key === 'Escape') for (const [, btn] of openPanels()) btn.click(); });
-$('t-reset').addEventListener('click', () => decks.forEach((d) => d.resetView()));
+$('t-reset').addEventListener('click', () => { decks.forEach((d) => d.resetView()); booth.reset(); });
 $('b-more').addEventListener('click', () => { $('more').showModal(); $('more').scrollTop = 0; });
 $('more').addEventListener('click', (e) => { if (e.target === $('more')) $('more').close(); });   // click outside closes
 // a file dropped on a deck goes on that deck
@@ -130,10 +132,11 @@ let resetShown = false;
 function tick() {
   requestAnimationFrame(tick);      // first, so nothing below can end the loop
   guard('mixer', () => mixer.tick(controllers));
+  guard('booth', () => booth.step(decks, mixer, controllers));
   for (const d of decks) d.tick();
   for (const c of controllers) guard('controller', () => c.tick());
-  const moved = decks.some((d) => d.moved);
+  const moved = booth.moved || decks.some((d) => d.moved);
   if (moved !== resetShown) { resetShown = moved; $('t-reset').hidden = !moved; }
 }
 tick();
-window.__rp = { S: A.S, get ctx() { return A.ctx; }, send: A.send, renderer: A.renderer, stylusXY, decks, mixer, controllers };   // debugging handle
+window.__rp = { S: A.S, get ctx() { return A.ctx; }, send: A.send, renderer: A.renderer, stylusXY, decks, mixer, controllers, booth };   // debugging handle

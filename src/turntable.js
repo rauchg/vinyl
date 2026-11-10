@@ -46,7 +46,7 @@ function takeBoot(dir) {
 
 // suffix: what this deck's element ids end in. inDj(): are two decks out? say(name, message): the status line.
 // guard(name, fn): runs a part of the frame so that a failure cannot stop the loop. touched(deck): a hand went on this deck. onStart(): it has first been switched on.
-export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say, guard, touched, onStart }) {
+export function createTurntable({ suffix = '', name = 'A', index = 0, og = false, inDj, say, guard, touched, onStart, booth }) {
   const el = (id) => $(id + suffix), primary = !suffix, api = {};
   const canvas = el('gl'), renderer = new Renderer(canvas);
   let masterWorker = null;      // the lathe + pressing plant; only started if something has to be mastered in the browser
@@ -354,6 +354,7 @@ export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say
   canvas.addEventListener('pointerdown', (e) => {
     touched(api);
     try { canvas.setPointerCapture(e.pointerId); } catch {}
+    if (booth?.down(e, renderer, index)) return;   // a hand on the mixer: nothing else is done with this finger
     touches.set(e.pointerId, [e.clientX, e.clientY]);
     if (touches.size === 2) {                     // a second finger: stop what the first was doing and pinch
       if (drag) drag.tap = false;
@@ -377,13 +378,15 @@ export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say
     canvas.style.cursor = 'grabbing';
   });
   canvas.addEventListener('pointermove', (e) => {
+    if (booth?.move(e)) return;
     if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
-    if (!drag) return;
+    if (!drag) { if (booth?.on) canvas.style.cursor = booth.cursor(e, renderer, index) || 'grab'; return; }
     if (drag.type === 'pinch') {
       const [a, b] = [...touches.values()];
       if (b) S.zoomT = Math.max(-0.8, Math.min(0.985, drag.z0 + 0.6 * Math.log(Math.hypot(a[0] - b[0], a[1] - b[1]) / drag.d0)));
     } else if (drag.type === 'orbit') {
-      S.az -= (e.clientX - drag.x) * 0.006; S.el = Math.max(0.02, Math.min(1.55, S.el + (e.clientY - drag.y) * 0.006)); S.resetting = false;
+      if (booth?.on) booth.orbit(e.clientX - drag.x, e.clientY - drag.y);   // the two halves of the booth turn together
+      else { S.az -= (e.clientX - drag.x) * 0.006; S.el = Math.max(0.02, Math.min(1.55, S.el + (e.clientY - drag.y) * 0.006)); S.resetting = false; }
       drag.x = e.clientX; drag.y = e.clientY;
       if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 6) drag.tap = false;
     } else if (drag.type === 'arm') {
@@ -409,7 +412,7 @@ export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say
     }
     drag = null; canvas.style.cursor = 'grab';
   };
-  for (const type of ['pointerup', 'pointercancel']) canvas.addEventListener(type, (e) => { touches.delete(e.pointerId); release(); });
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) canvas.addEventListener(type, (e) => { if (booth?.up(e)) return; if (type !== 'lostpointercapture') { touches.delete(e.pointerId); release(); } });
   // A tap on the scene powers on. It has to happen in `touchend` or `click`: iOS Safari does not accept
   // `pointerup` as a gesture that may start audio, and the context would stay suspended forever.
   for (const type of ['touchend', 'click']) canvas.addEventListener(type, () => {
@@ -497,19 +500,26 @@ export function createTurntable({ suffix = '', name = 'A', og = false, inDj, say
   }
   function tick() {
     const t = S.tel, dt = t ? Math.min(0.1, (performance.now() - S.tRecv) / 1000) : 0;
+    if (booth?.on && S.zoomT < 0) S.zoomT = 0;      // no standing further back: the two halves of the booth have to match
     S.zoom += (S.zoomT - S.zoom) * 0.12;
+    if (booth?.on && Math.abs(S.zoomT - S.zoom) < 5e-4) S.zoom = S.zoomT;
     if (frame % 6 === 0 && S.on && !S.started) powerMsg();
     if (S.resetting) {
       S.az += (AZ0 - S.az) * 0.12; S.el += (EL0 - S.el) * 0.12;
       if (Math.abs(S.az - AZ0) < 1e-3 && Math.abs(S.el - EL0) < 1e-3) { S.az = AZ0; S.el = EL0; S.resetting = false; }
     }
-    S.moved = Math.abs(S.zoomT) > 0.01 || Math.abs(S.az - AZ0) > 0.01 || Math.abs(S.el - EL0) > 0.01;
+    S.moved = Math.abs(S.zoomT) > 0.01 || (!booth?.on && (Math.abs(S.az - AZ0) > 0.01 || Math.abs(S.el - EL0) > 0.01));
     guard('render', () => {
       if (og) renderer.draw({ thp: 2.2, al: alphaForRadius(0.108), zt: 0, zoom: 0, az: -0.5, el: 0.6, motor: true, rpm: 33.3333, bare: true, dist: 1.1, at: [0.021, -0.07, -0.093], ...window.__og });   // deck high in the frame: X overlays the bottom
       else {
         const pose = S.pose = { thp: t ? t.thp + t.wp * dt : 0, al: t ? t.al : ALPHA_REST, zt: t ? t.zb + t.ze : 5e-3 };
-        frameDeck();
-        renderer.draw({ ...pose, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm, pull: S.pull, shift: S.shift });
+        if (booth?.on) {
+          const v = booth.view(index);
+          renderer.draw({ ...pose, zoom: Math.max(0, S.zoom), az: v.az, el: v.el, motor: S.motor, rpm: S.rpm, pull: v.pull, shift: v.shift, home: v.home, base: 1, booth: v });
+        } else {
+          frameDeck();
+          renderer.draw({ ...pose, zoom: S.zoom, az: S.az, el: S.el, motor: S.motor, rpm: S.rpm, pull: S.pull, shift: S.shift });
+        }
       }
     });
     if (frame++ % 2 === 0 && S.hudOn) guard('groove view', drawScope);
